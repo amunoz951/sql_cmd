@@ -3,8 +3,10 @@ SET NOCOUNT ON
 USE [master]
 
 DECLARE @newline nvarchar(2)
-SET @newline = CHAR(13)+CHAR(10)
+SET @newline = nchar(13)+nchar(10)
+DECLARE @remove_existing_logins bit
 DECLARE @sql_hexadecimal nvarchar(max)
+SET @remove_existing_logins = '$(removeexistinglogins)'
 
 SET @sql_hexadecimal = '
 DECLARE @binvalue varbinary(256)
@@ -82,7 +84,11 @@ BEGIN
   IF (@@fetch_status <> -2)
   BEGIN
     SET @createlogins_sql += '-- Login: ' + @name + @newline
-    SET @createlogins_sql += 'IF NOT EXISTS (SELECT name FROM master.sys.syslogins WHERE name LIKE ''' +  @name  + ''')' + @newline + 'BEGIN' + @newline
+    SET @createlogins_sql += 'IF ' + CASE WHEN @remove_existing_logins = 0 THEN 'NOT ' ELSE '' END + 'EXISTS (SELECT name FROM master.sys.syslogins WHERE name LIKE ''' +  @name  + ''')' + @newline + 'BEGIN' + @newline
+    IF (@remove_existing_logins = 1)
+    BEGIN
+      SET @createlogins_sql += 'DROP LOGIN [' + @name + ']' + @newline + 'END' + @newline
+    END
     IF (@type IN ( 'G', 'U'))
     BEGIN -- NT authenticated account/group
       SET @createlogins_sql += 'CREATE LOGIN ' + QUOTENAME( @name ) + ' FROM WINDOWS WITH DEFAULT_DATABASE = [' + @defaultdb + ']' + @newline
@@ -122,13 +128,16 @@ BEGIN
     BEGIN -- login is disabled
       SET @createlogins_sql += '; ALTER LOGIN ' + QUOTENAME( @name ) + ' DISABLE' + @newline
     END
-    SET @createlogins_sql += 'END;' + @newline
+    IF (@remove_existing_logins = 0) -- If existing logins were not removed, the script is wrapped in a conditional and needs to be closed with 'END'
+    BEGIN
+      SET @createlogins_sql += 'END;' + @newline
+    END
     SET @validatelogins_sql += 'IF NOT EXISTS (SELECT name FROM master.sys.syslogins WHERE name LIKE ''' +  @name  + ''')' + @newline + 'BEGIN' + @newline
     SET @validatelogins_sql += 'RAISERROR (''Login [' + @name + '] failed to import!'', 20, 1) WITH LOG' + @newline + 'END' + @newline
   END
 
   FETCH NEXT FROM login_curs INTO @SID_varbinary, @name, @type, @is_disabled, @defaultdb, @hasaccess, @denylogin
-   END
+END
 CLOSE login_curs
 DEALLOCATE login_curs
 

@@ -1,18 +1,29 @@
 module SqlCmd
+  # Optionally defined sysadmin_credentials with a connectionstring style user/password as a single string (IE: 'User Id=youruser;Password=yourpassword')
+  # If defined, these credentials are used when performing actions requiring sysadmin level permissions such as adding a database to an AlwaysOn Availability Group.
+  attr_accessor :sysadmin_credentials
+
   module_function
 
   def config
-    @config ||= EasyJSON.config(defaults: defaults)
+    @config ||= EasyJSON.config(defaults: defaults, required_keys: required_keys)
+  end
+
+  def required_keys
+    {
+      'sql_cmd' => {
+        'backups' => {
+          'always_on_backup_temp_dir' => nil,
+          'default_destination' => nil,
+        },
+      },
+    }
   end
 
   def defaults
     {
-      'environment' => {
-        'policy_group' => nil,
-        'chef' => false,
-      },
       'paths' => {
-        'cache' => ::File.expand_path("#{Dir.pwd}/cache"),
+        'cache' => Dir.tmpdir,
       },
       'logging' => {
         'level' => 'info',

@@ -191,6 +191,7 @@ module SqlCmd
     return :nobackup if sql_backup_header.nil? || sql_backup_header.empty?
     EasyIO.logger.info "Last backup for [#{sql_backup_header['DatabaseName']}] completed: #{sql_backup_header['BackupFinishDate']}" if [:prebackup, :prerestore].include?(messages)
     backup_finish_time = sql_backup_header['BackupFinishDate']
+    raise "BackupFinishDate missing from backup header: #{sql_backup_header}" if backup_finish_time.nil?
     if backup_finish_time > backup_start_time
       EasyIO.logger.info 'Backup is current. Bypassing database backup.' if messages == :prebackup
       EasyIO.logger.info 'Backup is current. Proceeding with restore...' if messages == :prerestore

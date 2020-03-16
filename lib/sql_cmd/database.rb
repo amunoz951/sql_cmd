@@ -5,11 +5,14 @@ module SqlCmd
     def backup(backup_start_time, connection_string, database_name, backup_folder: nil, backup_basename: nil, asynchronous: false, options: {})
       EasyIO.logger.header "Database #{options['copyonly'] ? 'Full Backup' : 'Backup'}"
       backup_start_time = ::Time.parse(backup_start_time) unless backup_start_time.is_a?(Time)
+      backup_start_time = backup_start_time.utc
+      database_info = SqlCmd::Database.info(connection_string, database_name)
+      sql_server_settings = SqlCmd.get_backup_sql_server_settings(connection_string)
+      raise "Failed to backup database! [#{database_name}] was not found on [#{sql_server_settings['ServerName']}]!" if database_info['DatabaseNotFound']
       raise 'Backup attempted before scheduled time!' if Time.now < backup_start_time
 
       options = default_backup_options.merge(options)
       free_space_threshold = SqlCmd.config['sql_cmd']['backups']['free_space_threshold']
-      sql_server_settings = SqlCmd.get_backup_sql_server_settings(connection_string)
       options['compressbackup'] ||= sql_server_settings['CompressBackup'] ? SqlCmd.config['sql_cmd']['backups']['compress_backups'] : false
       backup_basename = "#{database_name}_#{EasyFormat::DateTime.yyyymmdd(backup_start_time)}" if backup_basename.nil? || backup_basename.empty?
       original_basename = backup_basename
@@ -85,7 +88,7 @@ module SqlCmd
       end
     end
 
-    def migrate(start_time, source_connection_string, database_name, destination_connection_string, backup_folder: nil, backup_basename: nil, permissions_only: false, force_restore: false, options: {})
+    def migrate(start_time, source_connection_string, database_name, destination_connection_string, backup_folder: nil, backup_basename: nil, permissions_only: false, force_restore: false, full_backup_method: nil, options: {})
       EasyIO.logger.header 'Database Migration'
       start_time = ::Time.parse(start_time) unless start_time.is_a?(Time)
       source_connection_string = SqlCmd.remove_connection_string_part(source_connection_string, :database)
@@ -101,25 +104,33 @@ module SqlCmd
       if database_info['DatabaseNotFound'] && (destination_database_info['DatabaseNotFound'] || destination_database_info['DatabaseRestoring'] || destination_database_info['LastRestoreDate'] < start_time)
         raise "Failed to migrate database. Database [#{database_name}] does not exist on [#{source_server_name}]!"
       end
-      SqlCmd::Database.duplicate(start_time, source_connection_string, database_name, destination_connection_string, database_name, backup_folder: backup_folder, backup_basename: backup_basename, force_restore: force_restore, options: options) unless permissions_only
+      SqlCmd::Database.duplicate(start_time, source_connection_string, database_name, destination_connection_string, database_name, backup_folder: backup_folder, backup_basename: backup_basename, force_restore: force_restore, full_backup_method: full_backup_method, options: options) unless permissions_only
 
       SqlCmd::AlwaysOn.remove_from_availability_group(source_connection_string, database_name)
       SqlCmd::Database.drop(source_connection_string, database_name)
     end
 
-    def restore(backup_start_time, connection_string, database_name, backup_folder: nil, backup_basename: nil, full_backup_method: nil, force_restore: false, asynchronous: false, overwrite: true, options: {})
+    # permissions:
+    #   :keep_existing - If the database already exists before being restored, exports existing database permissions and imports them after restoring
+    #   :no_permissions - Does not do anything with permissions, only restores the database
+    #   :export_only - If the database already exists before being restored, exports exiting database permissions but does not import them after restoring
+    def restore(backup_start_time, connection_string, database_name, backup_folder: nil, backup_basename: nil, full_backup_method: nil, force_restore: false, asynchronous: false, overwrite: true, permissions: :keep_existing, options: {})
       raise 'backup_basename parameter is required when restoring a database!' if backup_basename.nil?
-      EasyIO.logger.header 'Database Restore'
+      EasyIO.logger.header "#{options['logonly'] ? 'Log' : 'Database'} Restore"
       backup_folder ||= SqlCmd.config['sql_cmd']['backups']['default_destination']
       backup_start_time = ::Time.parse(backup_start_time) unless backup_start_time.is_a?(Time)
       options = default_restore_options.merge(options)
+      options['replace'] ||= overwrite
       connection_string = SqlCmd.remove_connection_string_part(connection_string, :database)
       sql_server = SqlCmd.connection_string_part(connection_string, :server)
       database_info = info(connection_string, database_name)
       import_script_filename = nil
       unless database_info['DatabaseNotFound']
         raise "Failed to restore database: [#{database_name}] on [#{sql_server}]! Database already exists!" unless overwrite || force_restore
-        import_script_filename = export_security(backup_start_time, connection_string, database_name) unless options['logonly'] || database_info['state_desc'] != 'ONLINE'
+        unless options['logonly'] || database_info['state_desc'] != 'ONLINE' || permissions == :no_permissions
+          EasyIO.logger.info "Database already exists before restore on [#{sql_server}]. Saving existing database security permissions..."
+          import_script_filename = export_security(backup_start_time, connection_string, database_name)
+        end
       end
       free_space_threshold = SqlCmd.config['sql_cmd']['backups']['free_space_threshold']
       EasyIO.logger.debug "Getting SQL server settings for #{sql_server}..."
@@ -153,6 +164,14 @@ module SqlCmd
         next unless force_restore || !restore_up_to_date?(backup_start_time, connection_string, database_name, backup_files, pre_restore: true)
 
         raise "Unable to restore database [#{database_name}] to [#{sql_server}]! The database is being used for replication." if database_info['ReplicationActive']
+        if !database_info['DatabaseNotFound'] && SqlCmd::AlwaysOn.database_synchronized?(connection_string, database_name)
+          if options['skip_always_on']
+            raise "Failed to restore database: [#{database_name}] is part of an AlwaysOn Availability group on [#{sql_server}]."
+          elsif !options['secondaryreplica']
+            EasyIO.logger.info "Database [#{database_name}] is part of an availability group and will be removed..."
+            SqlCmd::AlwaysOn.remove_from_availability_group(connection_string, database_name)
+          end
+        end
         EasyIO.logger.debug "Restoring backup #{backup_set_basename} with header: #{JSON.pretty_generate(sql_backup_header)}"
 
         unless force_restore
@@ -178,15 +197,19 @@ module SqlCmd
         run_restore_as_job(connection_string, sql_server_settings, backup_files, database_name, options: options)
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files) unless asynchronous
       end
-      import_security(connection_string, import_script_filename, database_name) unless import_script_filename.nil?
-      ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica']
-      SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name) unless options['secondaryreplica'] || options['skip_always_on']
+      import_security(connection_string, import_script_filename, database_name) unless import_script_filename.nil? || [:no_permissions, :export_only].include?(permissions)
+      SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
+      ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica'] || full_backup_method == :skip
     end
 
     def validate_restorability(source_sql_version, destination_sql_version, source_type: :backup)
       sql_versions_valid = ::Gem::Version.new(source_sql_version.split('.')[0...1].join('.')) <= ::Gem::Version.new(destination_sql_version.split('.')[0...1].join('.'))
       not_valid_msg = "Unable to restore database. Destination server (#{destination_sql_version}) is on an older version of SQL than the source #{source_type == :backup ? 'backup' : 'server'} (#{source_sql_version})!"
       raise not_valid_msg unless sql_versions_valid
+    end
+
+    def backup_up_to_date?(start_time, connection_string, database_name, last_backup_date_key)
+      (SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key] || Time.at(0)) >= start_time
     end
 
     def restore_up_to_date?(start_time, connection_string, database_name, backup_files, pre_restore: false)
@@ -237,7 +260,7 @@ module SqlCmd
 
     # Creates and starts a SQL job to backup a database
     #   * See default_backup_options method for default options
-    def run_backup_as_job(connection_string, database_name, backup_folder: nil, backup_basename: nil, options: {})
+    def run_backup_as_job(connection_string, database_name, backup_folder:, backup_basename:, options: {})
       backup_status_script = ::File.read("#{SqlCmd.sql_script_dir}/Status/BackupProgress.sql")
       return unless SqlCmd.execute_query(connection_string, backup_status_script, return_type: :first_table, values: { 'databasename' => database_name }, retries: 3).empty?
 
@@ -252,66 +275,76 @@ module SqlCmd
       EasyIO.logger.debug "Database name: #{database_name}"
       EasyIO.logger.debug "Compress backup: #{values['compressbackup']}"
       EasyIO.logger.debug "Copy only: #{values['copyonly']}"
+      ::FileUtils.mkdir_p(backup_folder) unless ::File.directory?(backup_folder) # create the destination folder if it does not exist
       SqlCmd.run_sql_as_job(connection_string, sql_backup_script, "Backup: #{backup_basename}", values: values, retries: 1, retry_delay: 30)
     end
 
-    def monitor_backup(backup_start_time, connection_string, database_name, backup_folder: nil, backup_basename: nil, log_only: false)
+    def monitor_backup(backup_start_time, connection_string, database_name, backup_folder: nil, backup_basename: nil, log_only: false, retries: 3, retry_delay: 10)
       backup_status_script = ::File.read("#{SqlCmd.sql_script_dir}/Status/BackupProgress.sql")
       job_name = "Backup: #{database_name}"
       EasyIO.logger.info 'Checking backup status...'
-      sleep(15)
-      retries ||= 0
-      retry_limit = 3
-      timeout = 60
+      EasyIO.logger.debug "Backup start time: #{backup_start_time}"
+      sleep(15) # Give the job time to start
+      timeout = 60 # After the job finishes, check the backup up to date algorithm for this long to update before failing
       monitoring_start_time = Time.now
       timer_interval = 15
-      job_started = false
       last_backup_date_key = log_only ? 'LastLogOnlyBackupDate' : 'LastFullBackupDate'
-      EasyIO.logger.debug "Backup start time: #{backup_start_time}"
-      loop do
-        job_started = true if SqlCmd::Agent::Job.exists?(connection_string, job_name)
-        status_row = SqlCmd.execute_query(connection_string, backup_status_script, return_type: :first_row, values: { 'databasename' => database_name }, retries: 3)
-        if status_row.nil?
-          break if (SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key] || Time.at(0)) >= backup_start_time
-          job_status = SqlCmd::Agent::Job.status(connection_string, job_name)['LastRunStatus']
-          next if job_status == 'Running'
-          # TODO: check job history for errors if not :current
-          # job_message = job_history_message(connection_string, job_name) unless result == :current
-          if job_started # Check if job has timed out after stopping without completing
-            job_completion_time ||= Time.now
-            _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
-          elsif Time.now > monitoring_start_time + timeout # Job never started and timed out
-            _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_status: job_status, job_started: job_started)
+
+      # Initialize variables so they persists through retries
+      job_started ||= false
+      job_completion_time ||= nil
+      begin
+        loop do
+          job_started = true if SqlCmd::Agent::Job.exists?(connection_string, job_name)
+          status_row = SqlCmd.execute_query(connection_string, backup_status_script, return_type: :first_row, values: { 'databasename' => database_name }, retries: 3)
+          if status_row.nil?
+            break if backup_up_to_date?(backup_start_time, connection_string, database_name, last_backup_date_key)
+            job_status = SqlCmd::Agent::Job.status(connection_string, job_name)['LastRunStatus']
+            next if job_status == 'Running'
+            # TODO: check job history for errors if not :current
+            # job_message = job_history_message(connection_string, job_name) unless result == :current
+            if job_started # Check if job has timed out after stopping without completing
+              job_completion_time ||= Time.now
+              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
+            elsif Time.now > monitoring_start_time + timeout # Job never started and timed out
+              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: job_status, job_started: job_started)
+            end
+            sleep(timer_interval)
+            next
           end
+          job_started = true
+          EasyIO.logger.info "Percent complete: #{status_row['Percent Complete']} / Elapsed min: #{status_row['Elapsed Min']} / Min remaining: #{status_row['ETA Min']} / ETA: #{status_row['ETA Completion Time']}"
           sleep(timer_interval)
-          next
+          false # if we got here, conditions were not met. Keep looping...
         end
-        job_started = true
-        EasyIO.logger.info "Percent complete: #{status_row['Percent Complete']} / Elapsed min: #{status_row['Elapsed Min']} / Min remaining: #{status_row['ETA Min']} / ETA: #{status_row['ETA Completion Time']}"
-        sleep(timer_interval)
-        false # if we got here, conditions were not met. Keep looping...
+      rescue
+        sleep(retry_delay)
+        retry if (retries -= 1) >= 0
+        raise
       end
-      unless backup_folder.nil? || backup_basename.nil? # Don't validate backup files if backup folder or basename was not provided
-        sql_server_settings = SqlCmd.get_sql_server_settings(SqlCmd.to_integrated_security(connection_string))
-        backup_files, backup_basename = SqlCmd.get_backup_files(sql_server_settings, backup_folder, backup_basename, log_only: log_only)
-        if backup_files.empty?
-          EasyIO.logger.warn "Unable to verify backup files. Backup folder '#{backup_folder}' is inaccessible!"
-          return :current
+      begin
+        unless backup_folder.nil? || backup_basename.nil? # Don't validate backup files if backup folder or basename was not provided
+          sql_server_settings = SqlCmd.get_sql_server_settings(SqlCmd.to_integrated_security(connection_string))
+          backup_files, backup_basename = SqlCmd.get_backup_files(sql_server_settings, backup_folder, backup_basename, log_only: log_only)
+          if backup_files.empty?
+            EasyIO.logger.warn "Unable to verify backup files. Backup folder '#{backup_folder}' is inaccessible!"
+            return :current
+          end
+          sql_backup_header = SqlCmd.get_sql_backup_headers(connection_string, backup_files).first
+          result = SqlCmd.check_header_date(sql_backup_header, backup_start_time)
+          raise 'WARNING! Backup files are not current!' if result == :outdated
+          raise 'WARNING! Backup files could not be read!' if result == :nobackup
         end
-        sql_backup_header = SqlCmd.get_sql_backup_headers(connection_string, backup_files).first
-        result = SqlCmd.check_header_date(sql_backup_header, backup_start_time)
-        raise 'WARNING! Backup files are not current!' if result == :outdated
-        raise 'WARNING! Backup files could not be read!' if result == :nobackup
+      rescue
+        sleep(retry_delay)
+        retry if (retries -= 1) >= 0
+        raise
       end
       EasyIO.logger.info 'Backup complete.'
       result
-    rescue
-      sleep 10
-      retry if (retries += 1) <= retry_limit
-      raise
     end
 
-    def _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_status: nil, job_started: false)
+    def _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: nil, job_started: false)
       server_name = SqlCmd.connection_string_part(connection_string, :server)
       if job_started
         failure_message = "Backup may have failed as the backup has stopped and the last backup time shows #{SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key]} " \
@@ -350,49 +383,51 @@ module SqlCmd
       SqlCmd.run_sql_as_job(server_connection_string, sql_restore_script, "Restore: #{database_name}", values: values, retries: 1, retry_delay: 30)
     end
 
-    def monitor_restore(backup_start_time, connection_string, database_name, backup_files)
+    def monitor_restore(backup_start_time, connection_string, database_name, backup_files, retries: 3, retry_delay: 15)
       restore_status_script = ::File.read("#{SqlCmd.sql_script_dir}/Status/RestoreProgress.sql")
       job_name = "Restore: #{database_name}"
       server_connection_string = SqlCmd.remove_connection_string_part(connection_string, :database)
       values = { 'databasename' => database_name }
       EasyIO.logger.info 'Checking restore status...'
       sleep(15)
-      retries ||= 0
-      retry_limit = 4
       timeout = 60
       monitoring_start_time = Time.now
       timer_interval = 15
-      job_started = false
       restore_date_key = backup_files.any? { |f| f =~ /\.trn/i } ? 'LastLogRestoreDate' : 'LastRestoreDate'
-      loop do
-        job_started = true if SqlCmd::Agent::Job.exists?(connection_string, job_name)
-        status_row = SqlCmd.execute_query(server_connection_string, restore_status_script, return_type: :first_row, values: values, retries: 3)
-        if status_row.nil?
-          break if restore_up_to_date?(backup_start_time, connection_string, database_name, backup_files)
-          job_status = SqlCmd::Agent::Job.status(connection_string, job_name)['LastRunStatus']
-          next if job_status == 'Running'
-          # TODO: check job history for errors if not :current
-          # job_message = job_history_message(connection_string, job_name) unless result == :current
-          if job_started # check if job has timed out after stopping but not completing
-            job_completion_time ||= Time.now
-            _raise_restore_failure(connection_string, database_name, restore_date_key, backup_start_time, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
-          elsif Time.now > monitoring_start_time + timeout # Job never started and timed out
-            _raise_restore_failure(connection_string, database_name, restore_date_key, backup_start_time, job_status: job_status, job_started: job_started)
+
+      # Initialize variables so they persists through retries
+      job_started ||= false
+      job_completion_time ||= nil
+      begin
+        loop do
+          job_started = true if SqlCmd::Agent::Job.exists?(connection_string, job_name)
+          status_row = SqlCmd.execute_query(server_connection_string, restore_status_script, return_type: :first_row, values: values, retries: 3)
+          if status_row.nil?
+            break if restore_up_to_date?(backup_start_time, connection_string, database_name, backup_files)
+            job_status = SqlCmd::Agent::Job.status(connection_string, job_name)['LastRunStatus']
+            next if job_status == 'Running'
+            # TODO: check job history for errors if not :current
+            # job_message = job_history_message(connection_string, job_name) unless result == :current
+            if job_started # check if job has timed out after stopping but not completing
+              job_completion_time ||= Time.now
+              _raise_restore_failure(connection_string, database_name, restore_date_key, backup_start_time, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
+            elsif Time.now > monitoring_start_time + timeout # Job never started and timed out
+              _raise_restore_failure(connection_string, database_name, restore_date_key, backup_start_time, job_status: job_status, job_started: job_started)
+            end
+            sleep(timer_interval)
+            next
           end
+          job_started = true
+          EasyIO.logger.info "Percent complete: #{status_row['Percent Complete']} / Elapsed min: #{status_row['Elapsed Min']} / Min remaining: #{status_row['ETA Min']} / ETA: #{status_row['ETA Completion Time']}"
           sleep(timer_interval)
-          next
+          false # if we got here, conditions were not met. Keep looping...
         end
-        job_started = true
-        EasyIO.logger.info "Percent complete: #{status_row['Percent Complete']} / Elapsed min: #{status_row['Elapsed Min']} / Min remaining: #{status_row['ETA Min']} / ETA: #{status_row['ETA Completion Time']}"
-        sleep(timer_interval)
-        false # if we got here, conditions were not met. Keep looping...
+        EasyIO.logger.info 'Restore complete.'
+      rescue
+        sleep(retry_delay)
+        retry if (retries -= 1) >= 0
+        raise
       end
-      EasyIO.logger.info 'Restore complete.'
-      :current
-    rescue
-      sleep(15 * retries)
-      retry if (retries += 1) <= retry_limit
-      raise
     end
 
     def _raise_restore_failure(connection_string, database_name, restore_date_key, backup_start_time, job_status: nil, job_started: false)
@@ -430,7 +465,8 @@ module SqlCmd
       if force_backup || database_info['LastNonCopyOnlyFullBackupDate'].nil? || # Ensure last full backup occurred AFTER the DB was last restored
          (!database_info['LastRestoreDate'].nil? && database_info['LastNonCopyOnlyFullBackupDate'] < database_info['LastRestoreDate'])
         EasyIO.logger.info 'Running full backup...'
-        full_backup_method.nil? ? SqlCmd::Database.backup(Time.now, connection_string, database_name, options: { 'copyonly' => false }) : full_backup_method.call
+        backup_basename = "full_backup-#{database_name}_#{EasyFormat::DateTime.yyyymmdd}" # If a full_backup_method was not provided, use this name for the database backup for clarity
+        full_backup_method.nil? ? SqlCmd::Database.backup(Time.now, connection_string, database_name, backup_basename: backup_basename, options: { 'copyonly' => false }) : full_backup_method.call
       end
     end
 
@@ -461,7 +497,7 @@ module SqlCmd
 
     def export_security(start_time, connection_string, database_name)
       server_name = SqlCmd.connection_string_part(connection_string, :server)
-      export_folder = "#{SqlCmd.config['paths']['cache']}/logins"
+      export_folder = "#{SqlCmd.config['paths']['cache']}/sql_cmd/logins"
       import_script_filename = "#{export_folder}/#{EasyFormat::File.windows_friendly_name(server_name)}_#{database_name}_database_permissions_#{EasyFormat::DateTime.yyyymmdd(start_time)}.sql"
       return import_script_filename if ::File.exist?(import_script_filename) && ::File.mtime(import_script_filename) > start_time
 
@@ -472,6 +508,7 @@ module SqlCmd
       return nil if import_script.nil? || import_script.empty?
       FileUtils.mkdir_p(export_folder)
       ::File.write(import_script_filename, import_script)
+      EasyIO.logger.info "Permissions exported to: #{import_script_filename}"
       EasyIO.logger.debug "Resulting import script: #{import_script}"
       import_script_filename
     end

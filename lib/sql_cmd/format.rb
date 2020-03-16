@@ -84,10 +84,15 @@ module SqlCmd
     ::File.basename(backup_path).gsub(/(\.part\d+)?\.(bak|trn)/i, '')
   end
 
-  # generates a connection string from the hash provided. Example hash: { 'server' => 'someservername', 'database' => 'somedb', 'user' => 'someuser', 'password' => 'somepass' }
-  def connection_string_from_hash(connection_hash, windows_authentication: false)
-    credentials = windows_authentication ? 'integrated security=SSPI;' : "user id=#{connection_hash['user']};password=#{connection_hash['password']}"
-    "server=#{connection_hash['server']};database=#{connection_hash['name']};#{credentials}"
+  # generates a connection string from the hash provided. Example hash: { 'server' => 'someservername', 'database' => 'somedb', 'user' => 'someuser', 'password' => 'somepass', 'windows_authentication' => false }
+  def connection_string_from_hash(**connection_hash)
+    connection_hash = EasyFormat::Hash.stringify_all_keys(connection_hash.dup)
+    windows_authentication = connection_hash['windows_authentication']
+    windows_authentication = connection_hash['user'].nil? || connection_hash['password'].nil? if windows_authentication.nil? # If windows authentication wasn't specified, set it if user or pass is nil
+    credentials_segment = windows_authentication ? 'integrated security=SSPI;' : "user id=#{connection_hash['user']};password=#{connection_hash['password']}"
+    database_name = connection_hash['database']
+    database_segment = database_name.nil? || database_name.strip.empty? ? '' : "database=#{database_name};"
+    "server=#{connection_hash['server']};#{database_segment}#{credentials_segment}"
   end
 
   # Ensures a connection string is using integrated security instead of SQL Authentication.

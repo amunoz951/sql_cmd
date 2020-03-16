@@ -76,7 +76,7 @@ module SqlCmd
       add_to_primary_availability_group_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AddDatabaseToPrimaryAvailabilityGroup.sql")
       add_to_availability_group_on_secondary_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AddDatabaseToAvailabilityGroupOnSecondary.sql")
 
-      SqlCmd.execute_query(primary_connection_string, configure_primary_for_manual_seeding_script, values: values, retries: 3)
+      SqlCmd.execute_query(primary_connection_string, configure_primary_for_manual_seeding_script, values: values, retries: 3) if ::Gem::Version.new(server_info['SQLVersion']) >= ::Gem::Version.new('13.0')
 
       EasyIO.logger.info "Adding [#{database_name}] to availability group..."
       SqlCmd.execute_query(primary_connection_string, add_to_primary_availability_group_script, values: values, retries: 3)
@@ -135,6 +135,7 @@ module SqlCmd
     end
 
     def add_to_availability_group_automatically(primary_connection_string, replica_connection_string, database_name, server_info, values: {}, async: false)
+      EasyIO.logger.header 'AlwaysOn Automatic Seeding'
       configure_primary_for_automatic_seeding_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/ConfigurePrimaryForAutomaticSeeding.sql")
       add_to_primary_availability_group_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AddDatabaseToPrimaryAvailabilityGroup.sql")
       configure_secondary_for_automatic_seeding_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/ConfigureSecondaryForAutomaticSeeding.sql")
@@ -150,11 +151,12 @@ module SqlCmd
       end
 
       monitor_automatic_seeding(primary_connection_string, database_name)
-      raise 'Failed to add to AlwaysOn availability group!' unless database_synchronized?(primary_connection_string, replica_connection_string, database_name)
+      raise 'Failed to add to AlwaysOn availability group!' unless database_synchronized?(primary_connection_string, database_name, replica_connection_string: replica_connection_string)
       EasyIO.logger.info "[#{database_name}] added to AlwaysOn availability group successfully..."
     end
 
     def monitor_automatic_seeding(connection_string, database_name)
+      EasyIO.logger.header 'Monitoring AlwaysOn Seeding'
       progress_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AutomaticSeedingProgress.sql")
       values = { 'databasename' => database_name }
 
@@ -188,18 +190,22 @@ module SqlCmd
           raise failure_message
         end
 
-        percent_complete = (seeding_status['transferred_size_percent_complete'] + seeding_status['time_elapsed_percent_complete'] / 2)
+        percent_complete = (seeding_status['transferred_size_percent_complete'] + seeding_status['time_elapsed_percent_complete']) / 2
         elapsed_min = (Time.now - start_time) / 60
         eta_min = (elapsed_min / (percent_complete / 100)) - elapsed_min
         eta_time = Time.now + (eta_min * 60).round
-        EasyIO.logger.info "Percent complete: #{percent_complete} / Elapsed min: #{elapsed_min} / Min remaining: #{eta_min} / ETA: #{eta_time}"
+        EasyIO.logger.info "Percent complete: #{percent_complete} / Elapsed min: #{elapsed_min.round(2)} / Min remaining: #{eta_min.round(2)} / ETA: #{eta_time}"
         sleep(progress_interval)
       end
       raise "Automatic seeding timed out after #{timeout / 60 / 60} hours!" # only gets here if status never reached 'COMPLETED'
     end
 
-    def database_synchronized?(primary_connection_string, replica_connection_string, database_name)
+    def database_synchronized?(primary_connection_string, database_name, replica_connection_string: nil)
       database_info = SqlCmd::Database.info(primary_connection_string, database_name)
+      if replica_connection_string.nil? || replica_connection_string.empty?
+        server_info = SqlCmd.get_sql_server_settings(primary_connection_string)
+        replica_connection_string = server_info['secondary_replica_connection_string']
+      end
       replica_database_info = SqlCmd::Database.info(replica_connection_string, database_name)
       !database_info['AvailabilityGroup'].nil? && !replica_database_info['AvailabilityGroup'].nil?
     end
