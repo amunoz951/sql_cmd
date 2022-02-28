@@ -1,6 +1,7 @@
 SET NOCOUNT ON
 
 DECLARE @db_name nvarchar(max)
+DECLARE @credential nvarchar(max)
 DECLARE @db_state int
 DECLARE @bkup_files nvarchar(max)
 DECLARE @data_file nvarchar(max)
@@ -17,6 +18,7 @@ DECLARE @log_only bit
 DECLARE @simple_recovery bit
 DECLARE @recovery bit
 DECLARE @replace bit
+DECLARE @keep_replication bit
 DECLARE @unload bit
 DECLARE @stats nvarchar(3)
 
@@ -26,6 +28,7 @@ DECLARE @Version14Plus bit
 DECLARE @SQLMajorVersion nvarchar(128)
 
 SET @db_name = '$(databasename)'
+SET @credential = '$(credential)'
 SET @bkup_files = '$(bkupfiles)'
 SET @data_file = '$(datafile)'
 SET @data_file_logical_name = '$(datafilelogicalname)'
@@ -35,6 +38,7 @@ SET @log_only = '$(logonly)'
 SET @simple_recovery = '$(simplerecovery)'
 SET @recovery = '$(recovery)'
 SET @replace = '$(replace)'
+SET @keep_replication = '$(keepreplication)'
 SET @unload = '$(unload)'
 SET @stats = '$(stats)'
 
@@ -111,7 +115,7 @@ INSERT INTO @BackupSets
 exec (''
 RESTORE HEADERONLY
 FROM ' + REPLACE(@bkup_files, '''', '''''') + '
-WITH NOUNLOAD'')
+WITH NOUNLOAD' + CASE WHEN @credential NOT LIKE '' THEN ', CREDENTIAL = ''''' + @credential + '''''' ELSE '' END + ''')
 
 SELECT TOP(1) @BackupSetPosition = Position FROM @BackupSets
 ORDER BY BackupFinishDate DESC
@@ -163,6 +167,8 @@ SET @database_cmd = 'RESTORE ' + CASE WHEN @log_only = 1 THEN 'LOG' ELSE 'DATABA
                     CASE WHEN @log_file_logical_name != '' THEN 'MOVE N''' + @log_file_logical_name + ''' TO N''' + @log_file + ''', ' ELSE '' END +
                     CASE WHEN @replace = 1 THEN 'REPLACE, ' ELSE '' END +
                     CASE WHEN @recovery = 1 THEN 'RECOVERY' ELSE 'NORECOVERY' END + ', ' +
+                    CASE WHEN @keep_replication = 1 THEN 'KEEP_REPLICATION, ' ELSE '' END +
+                    CASE WHEN @credential NOT LIKE '' THEN 'CREDENTIAL = ''' + @credential + ''', ' ELSE '' END +
                     CASE WHEN @unload = 1 THEN 'UNLOAD' ELSE 'NOUNLOAD' END + ', STATS = ' + @stats
 
 SET @change_logical_names_cmd = 'ALTER DATABASE [' + @db_name + '] MODIFY FILE ( NAME = ' + @data_file_logical_name + ', NEWNAME = ' + @db_name + '_Data );' +

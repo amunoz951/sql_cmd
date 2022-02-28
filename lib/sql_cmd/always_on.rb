@@ -77,6 +77,7 @@ module SqlCmd
       configure_primary_for_manual_seeding_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/ConfigurePrimaryForManualSeeding.sql")
       add_to_primary_availability_group_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AddDatabaseToPrimaryAvailabilityGroup.sql")
       add_to_availability_group_on_secondary_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AddDatabaseToAvailabilityGroupOnSecondary.sql")
+      backup_url = SqlCmd.config['sql_cmd']['always_on_backup_url']
 
       SqlCmd.execute_query(primary_connection_string, configure_primary_for_manual_seeding_script, values: values, retries: 3) if ::Gem::Version.new(server_info['SQLVersion']) >= ::Gem::Version.new('13.0')
 
@@ -88,8 +89,8 @@ module SqlCmd
       copy_only_full_backup_exists = ::File.exist?("#{values['backupdir']}\\#{database_name}.bak")
       copy_only_backup_start_time = Time.now
       if copy_only_full_backup_exists && idempotent
-        copy_only_full_backup_header = SqlCmd.get_sql_backup_headers(primary_connection_string, ["#{values['backupdir']}\\#{database_name}.bak"]).first
-        copy_only_backup_current = !SqlCmd.gap_in_log_backups?(server_info, copy_only_full_backup_header, replica_database_info['LastRestoreLSN'], values['backupdir'], database_name)
+        copy_only_full_backup_header = SqlCmd.get_sql_backup_headers(primary_connection_string, ["#{values['backupdir']}\\#{database_name}.bak"], values).first
+        copy_only_backup_current = !SqlCmd.gap_in_log_backups?(server_info, copy_only_full_backup_header, replica_database_info['LastRestoreLSN'], values['backupdir'], database_name, values)
         copy_only_backup_current &&= (database_info['LastRestoreDate'] || Time.at(0)) < copy_only_full_backup_header['BackupFinishDate'] # Make sure the database hasn't been restored again since the last backup
         EasyIO.logger.debug "LSN of CopyOnly backup: #{copy_only_full_backup_header['DatabaseBackupLSN']}"
         EasyIO.logger.debug "Last restore LSN: #{replica_database_info['LastRestoreLSN']}"
@@ -101,7 +102,7 @@ module SqlCmd
       else
         EasyIO.logger.info 'Backing up database on primary server (CopyOnly)...'
         always_on_backup_options = { 'formatbackup' => true, 'init' => true, 'rewind' => true, 'nounload' => true, 'compressbackup' => true, 'splitfiles' => false }
-        SqlCmd::Database.backup(copy_only_backup_start_time, primary_connection_string, database_name, backup_folder: values['backupdir'], backup_basename: database_name, options: always_on_backup_options)
+        SqlCmd::Database.backup(copy_only_backup_start_time, primary_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: always_on_backup_options)
       end
 
       # Restore database to secondary replica if it was restored before the copy only backup was created or if it doesn't exist
@@ -110,7 +111,7 @@ module SqlCmd
          replica_database_info['LastRestoreDate'] < database_info['LastCopyOnlyFullBackupDate'] || replica_database_info['LastRestoreLSN'] < database_info['LastCopyOnlyLSN']
         EasyIO.logger.info 'Restoring database to secondary replica...'
         restore_options = { 'recovery' => false, 'unload' => false, 'simplerecovery' => false, 'secondaryreplica' => true, 'datafilelogicalname' => '', 'logfilelogicalname' => '' }
-        SqlCmd::Database.restore(copy_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_basename: database_name, options: restore_options)
+        SqlCmd::Database.restore(copy_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: restore_options)
       else
         EasyIO.logger.info 'Restore of CopyOnly database backup current. Skipping restore of CopyOnly database backup...'
       end
@@ -121,12 +122,12 @@ module SqlCmd
       log_only_backup_start_time = Time.now
       log_only_options = { 'logonly' => true, 'skip' => false, 'rewind' => true, 'compressbackup' => true, 'splitfiles' => false }
       EasyIO.logger.info 'Backing up log file on primary replica...'
-      SqlCmd::Database.backup(log_only_backup_start_time, primary_connection_string, database_name, backup_folder: values['backupdir'], backup_basename: database_name, options: log_only_options)
+      SqlCmd::Database.backup(log_only_backup_start_time, primary_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: log_only_options)
 
       # Restore log on secondary replica
       EasyIO.logger.header 'AlwaysOn Log Restore to Replica'
       restore_options = { 'recovery' => false, 'unload' => false, 'simplerecovery' => false, 'logonly' => true, 'secondaryreplica' => true }
-      SqlCmd::Database.restore(log_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_basename: database_name, options: restore_options)
+      SqlCmd::Database.restore(log_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: restore_options)
 
       # Add to availability group on secondary replica
       EasyIO.logger.header 'AlwaysOn Database Sync'
@@ -172,43 +173,52 @@ module SqlCmd
       seeding_start_timeout = 300 # Allow 5 minutes to start the seeding process before failing
       timeout = 86400 # 24 hours
       progress_interval = 4 # seconds
-      while Time.now < start_time + timeout
-        seeding_status = SqlCmd.execute_query(connection_string, progress_script, values: values, return_type: :first_row, retries: 3)
+      begin
+        while Time.now < start_time + timeout
+          seeding_status = SqlCmd.execute_query(connection_string, progress_script, values: values, return_type: :first_row, retries: 3)
 
-        if seeding_status['current_state'] == 'COMPLETED'
-          EasyIO.logger.info 'AlwaysOn seeding complete.'
-          return
-        end
-
-        if seeding_status['time_elapsed_percent_complete'].nil? || seeding_status['current_state'] == 'FAILED'
-          unless Time.now > start_time + seeding_start_timeout
-            EasyIO.logger.info 'Waiting for automatic synchronization process...'
-            sleep(progress_interval)
-            next
+          if seeding_status['current_state'] == 'COMPLETED'
+            EasyIO.logger.info 'AlwaysOn seeding complete.'
+            return
           end
-          raise "Failed to seed #{database_name} automatically! Check the synchronization status." if seeding_status.empty?
-          failure_message = "Failed to seed #{database_name} automatically in availability group [#{seeding_status['ag_name']}]! Check the synchronization status on #{seeding_status['replica_server_name']}.\n"
-          failure_message += seeding_status['failure_state_desc'] unless seeding_status['failure_state_desc'].nil?
-          raise failure_message
-        end
 
-        percent_complete = (seeding_status['transferred_size_percent_complete'] + seeding_status['time_elapsed_percent_complete']) / 2
-        elapsed_min = (Time.now - start_time) / 60
-        eta_min = (elapsed_min / (percent_complete / 100)) - elapsed_min
-        eta_time = Time.now + (eta_min * 60).round
-        EasyIO.logger.info "Percent complete: #{percent_complete} / Elapsed min: #{elapsed_min.round(2)} / Min remaining: #{eta_min.round(2)} / ETA: #{eta_time}"
-        sleep(progress_interval)
+          if seeding_status['transferred_size_percent_complete'].nil? || seeding_status['current_state'] == 'FAILED'
+            unless Time.now > start_time + seeding_start_timeout
+              EasyIO.logger.info 'Waiting for automatic synchronization process...'
+              sleep(progress_interval)
+              next
+            end
+            raise "Failed to seed #{database_name} automatically! Check the synchronization status." if seeding_status.empty?
+            failure_message = "Failed to seed #{database_name} automatically in availability group [#{seeding_status['ag_name']}]! Check the synchronization status on #{seeding_status['replica_server_name']}.\n"
+            failure_message += seeding_status['failure_state_desc'] unless seeding_status['failure_state_desc'].nil?
+            raise failure_message
+          end
+
+          percent_complete = seeding_status['transferred_size_percent_complete']
+          percent_complete = 0.1 if percent_complete == 0 # Avoid divide by zero
+          elapsed_min = (Time.now - start_time) / 60
+          eta_min = (elapsed_min / (percent_complete / 100.0)) - elapsed_min
+          eta_time = Time.now + (eta_min * 60).round
+          EasyIO.logger.info "Percent complete: #{percent_complete.round(1)} / Elapsed min: #{elapsed_min.round(2)} / Min remaining: #{eta_min.round(2)} / ETA: #{eta_time}"
+          sleep(progress_interval)
+        end
+      rescue
+        raise if (retries -= 1) < 0
+        EasyIO.logger.warn "Failure monitoring AlwaysOn seeding. Retrying in #{retry_delay} seconds..."
+        sleep(retry_delay)
+        retry
       end
       raise "Automatic seeding timed out after #{timeout / 60 / 60} hours!" # only gets here if status never reached 'COMPLETED'
     end
 
     def database_synchronized?(primary_connection_string, database_name, replica_connection_string: nil)
       database_info = SqlCmd::Database.info(primary_connection_string, database_name)
+      # TODO: check if AlwaysOn is even enabled on this server
       if replica_connection_string.nil? || replica_connection_string.empty?
         server_info = SqlCmd.get_sql_server_settings(primary_connection_string)
         replica_connection_string = server_info['secondary_replica_connection_string']
       end
-      replica_database_info = SqlCmd::Database.info(replica_connection_string, database_name)
+      replica_database_info = replica_connection_string.nil? ? {} : SqlCmd::Database.info(replica_connection_string, database_name)
       !database_info['AvailabilityGroup'].nil? && !replica_database_info['AvailabilityGroup'].nil?
     end
 

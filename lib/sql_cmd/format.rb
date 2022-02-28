@@ -56,6 +56,12 @@ module SqlCmd
     replace_connection_string_part(connection_string, :credentials, credentials)
   end
 
+  def unify_start_time(start_time, timezone: SqlCmd.config['environment']['timezone'])
+    return EasyTime.at_timezone(Time.now, timezone) if start_time.nil? || start_time.to_s.strip.empty?
+    return EasyTime.at_timezone(start_time, timezone) if start_time.is_a?(Time)
+    EasyTime.stomp_timezone(start_time, timezone) # Stomp the timezone with the config timezone. If no start_time was provided, use the current time
+  end
+
   # Supply entire value (EG: 'user id=value;password=value;' or 'integrated security=SSPI;') as the replacement_value if the part is :credentials
   # or provide a hash containing a username and password { user: 'someuser', password: 'somepassword', }
   def replace_connection_string_part(connection_string, part, replacement_value)
@@ -84,15 +90,20 @@ module SqlCmd
     ::File.basename(backup_path).gsub(/(\.part\d+)?\.(bak|trn)/i, '')
   end
 
+  def connection_string_credentials_from_hash(**credentials_hash)
+    credentials_hash = Hashly.symbolize_all_keys(credentials_hash.dup)
+    windows_authentication = credentials_hash[:windows_authentication]
+    windows_authentication = credentials_hash[:user].nil? || credentials_hash[:password].nil? if windows_authentication.nil? # If windows authentication wasn't specified, set it if user or pass is nil
+    windows_authentication ? 'integrated security=SSPI;' : "user id=#{credentials_hash[:user]};password=#{credentials_hash[:password]}"
+  end
+
   # generates a connection string from the hash provided. Example hash: { 'server' => 'someservername', 'database' => 'somedb', 'user' => 'someuser', 'password' => 'somepass', 'windows_authentication' => false }
   def connection_string_from_hash(**connection_hash)
-    connection_hash = EasyFormat::Hash.stringify_all_keys(connection_hash.dup)
-    windows_authentication = connection_hash['windows_authentication']
-    windows_authentication = connection_hash['user'].nil? || connection_hash['password'].nil? if windows_authentication.nil? # If windows authentication wasn't specified, set it if user or pass is nil
-    credentials_segment = windows_authentication ? 'integrated security=SSPI;' : "user id=#{connection_hash['user']};password=#{connection_hash['password']}"
-    database_name = connection_hash['database']
+    connection_hash = Hashly.symbolize_all_keys(connection_hash.dup)
+    credentials_segment = connection_string_credentials_from_hash(**connection_hash)
+    database_name = connection_hash[:database]
     database_segment = database_name.nil? || database_name.strip.empty? ? '' : "database=#{database_name};"
-    "server=#{connection_hash['server']};#{database_segment}#{credentials_segment}"
+    "server=#{connection_hash[:server]};#{database_segment}#{credentials_segment}"
   end
 
   # Ensures a connection string is using integrated security instead of SQL Authentication.
@@ -102,7 +113,7 @@ module SqlCmd
     new_connection_string = ''
     ommitted_parts = ['user id', 'uid', 'password', 'pwd', 'integrated security', 'trusted_connection']
     ommitted_parts += ['database', 'initial catalog'] if server_only
-    parts.each { |part| new_connection_string << "#{part};" unless part.downcase.strip.start_with?(*ommitted_parts) }
+    parts.each { |part| new_connection_string << "#{part};" unless part.downcase.strip.start_with?(*ommitted_parts) } # only keep parts not omitted
     "#{new_connection_string}Integrated Security=SSPI;"
   end
 

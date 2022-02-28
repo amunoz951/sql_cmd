@@ -1,8 +1,4 @@
 module SqlCmd
-  # Optionally defined sysadmin_credentials with a connectionstring style user/password as a single string (IE: 'User Id=youruser;Password=yourpassword')
-  # If defined, these credentials are used when performing actions requiring sysadmin level permissions such as adding a database to an AlwaysOn Availability Group.
-  attr_accessor :sysadmin_credentials
-
   module_function
 
   def config
@@ -25,6 +21,9 @@ module SqlCmd
       'paths' => {
         'cache' => Dir.tmpdir,
       },
+      'environment' => {
+        'timezone' => 'UTC',
+      },
       'logging' => {
         'level' => 'info',
         'verbose' => false, # show queries and returned json
@@ -32,6 +31,7 @@ module SqlCmd
       'sql_cmd' => {
         'backups' => {
           'always_on_backup_temp_dir' => nil, # where backups will go when adding to availability groups and seeding_mode is manual or nil
+          'always_on_backup_url' => nil, # where backups will go when adding to availability groups and seeding_mode is manual or nil - supercedes temp dir above
           'default_destination' => nil, # where backups will go by default
           'backup_to_host_sql_server' => false, # if set to true, will backup databases to the SQL host instead of the default destination
           'default_backup_share' => nil, # the name of the windows share relative to SQL hosts where backups go when set to backup to sql hosts
