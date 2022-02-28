@@ -36,3 +36,9 @@ require_relative 'sql_cmd/backups'
 require_relative 'sql_cmd/database'
 require_relative 'sql_cmd/agent'
 require_relative 'sql_cmd/query'
+require_relative 'sql_cmd/security'
+require_relative 'sql_cmd/azure'
+require_relative 'optional_dependencies'
+
+# Assign globals
+EasyTime.timezone = SqlCmd.config['environment']['timezone']
