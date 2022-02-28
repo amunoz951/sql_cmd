@@ -27,7 +27,7 @@ module SqlCmd
       end
 
       EasyIO.logger.info "Preparing to add [#{database_name}] to AlwaysOn availability group..."
-      always_on_backup_time = EasyFormat::DateTime.yyyymmdd_hhmmss(start_time)
+      always_on_backup_time = EasyTime.yyyymmdd_hhmmss(start_time)
 
       full_recovery_script = ::File.read("#{SqlCmd.sql_script_dir}/Database/SetFullRecovery.sql")
 

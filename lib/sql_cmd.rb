@@ -24,6 +24,9 @@ require 'zipr'
 require 'json'
 require 'open3'
 require 'fileutils'
+require 'easy_format'
+require 'easy_time'
+require 'hashly'
 
 # SqlCmd Modules
 require_relative 'sql_cmd/config'
