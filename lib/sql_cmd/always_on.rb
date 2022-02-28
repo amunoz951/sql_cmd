@@ -5,8 +5,9 @@ module SqlCmd
     # Optionally provide your own lambda for creating a full non-copyonly backup using the full_backup_method parameter
     # Seeding modes: AUTOMATIC (No backup/restore needed to synchronize), MANUAL (traditional backup and restore process)
     # async option is only observed when using automatic seeding
-    def add_to_availability_group(connection_string, database_name, seeding_mode: nil, full_backup_method: nil, async: false, start_time: Time.now)
+    def add_to_availability_group(connection_string, database_name, options = {}, seeding_mode: nil, full_backup_method: nil, async: false, idempotent: false, start_time: Time.now)
       EasyIO.logger.header 'AlwaysOn Availability'
+      start_time = SqlCmd.unify_start_time(start_time)
       EasyIO.logger.info "Checking if server [#{SqlCmd.connection_string_part(connection_string, :server)}] is configured for AlwaysOn High Availability..."
       server_info = SqlCmd.get_sql_server_settings(connection_string)
       if server_info['AvailabilityGroup'].nil? || server_info['SecondaryReplica'].nil?
@@ -39,7 +40,7 @@ module SqlCmd
         'primarysqlserver' => server_info['ServerName'],
         'seedingmode' => seeding_mode.upcase,
         'backupdir' => SqlCmd.config['sql_cmd']['backups']['always_on_backup_temp_dir'],
-      }
+      }.merge(options)
 
       raise "Could not determine secondary replica for #{server_info['ServerName']}" if server_info['SecondaryReplica'].nil?
 
@@ -47,11 +48,12 @@ module SqlCmd
         EasyIO.logger.header 'AlwaysOn Full Backup'
         EasyIO.logger.info "Ensuring database [#{database_name}] is set to full recovery..."
         recovery_model_updated = SqlCmd.execute_query(connection_string, full_recovery_script, values: values, return_type: :scalar, retries: 3)
-        SqlCmd::Database.ensure_full_backup_has_occurred(connection_string, database_name, force_backup: recovery_model_updated, database_info: database_info, full_backup_method: full_backup_method)
+        force_backup = recovery_model_updated || !idempotent
+        SqlCmd::Database.ensure_full_backup_has_occurred(connection_string, database_name, force_backup: force_backup, database_info: database_info, full_backup_method: full_backup_method)
         if seeding_mode.upcase == 'AUTOMATIC'
           add_to_availability_group_automatically(primary_connection_string, replica_connection_string, database_name, server_info, values: values, async: async)
         else
-          add_database_to_replica_using_backups(primary_connection_string, replica_connection_string, server_info, database_info, replica_database_info, values: values)
+          add_database_to_replica_using_backups(primary_connection_string, replica_connection_string, server_info, database_info, replica_database_info, values: values, idempotent: idempotent)
         end
       else
         EasyIO.logger.info 'Database already in AlwaysOn Availability group.'
@@ -155,7 +157,7 @@ module SqlCmd
       EasyIO.logger.info "[#{database_name}] added to AlwaysOn availability group successfully..."
     end
 
-    def monitor_automatic_seeding(connection_string, database_name)
+    def monitor_automatic_seeding(connection_string, database_name, retries: 3, retry_delay: 15)
       EasyIO.logger.header 'Monitoring AlwaysOn Seeding'
       progress_script = ::File.read("#{SqlCmd.sql_script_dir}/AlwaysOn/AutomaticSeedingProgress.sql")
       values = { 'databasename' => database_name }
