@@ -1,4 +1,7 @@
 module SqlCmd
+  @scripts_cache = "#{SqlCmd.config['paths']['cache']}/sql_cmd/scripts"
+  @scripts_cache_windows = @scripts_cache.tr('\\', '/')
+
   module_function
 
   # Execute a SQL query and return a dataset, table, row, or scalar, based on the return_type specified
@@ -9,7 +12,7 @@ module SqlCmd
   #   readonly: if true, sets the connection_string to readonly (Useful with AOAG)
   #   retries: number of times to re-attempt failed queries
   #   retry_delay: how many seconds to wait between retries
-  def execute_query(connection_string, sql_query, return_type: :all_tables, values: nil, timeout: 172_800, readonly: false, ignore_missing_values: false, retries: 0, retry_delay: 5)
+  def execute_query(connection_string, sql_query, return_type: :all_tables, values: nil, timeout: 172_800, readonly: false, ignore_missing_values: false, at_timezone: SqlCmd.config['environment']['timezone'], string_to_time_by: '%Y-%m-%d %H:%M:%S %z', retries: 0, retry_delay: 5)
     sql_query = insert_values(sql_query, values) unless values.nil?
     missing_values = sql_query.reverse.scan(/(\)[0-9a-z_]+\(\$)(?!.*--)/i).uniq.join(' ,').reverse # Don't include commented variables
     raise "sql_query has missing variables! Ensure that values are supplied for: #{missing_values}\n" unless missing_values.empty? || ignore_missing_values
@@ -18,9 +21,9 @@ module SqlCmd
     raise 'Connection string is nil or incomplete' if connection_string_updated.nil? || connection_string_updated.empty?
     EasyIO.logger.debug "Executing query with connection_string: \n\t#{hide_connection_string_password(connection_string_updated)}"
     EasyIO.logger.debug sql_query if SqlCmd.config['logging']['verbose'] && sql_query.length < 8096
-    start_time = Time.now.strftime('%y%m%d_%H%M%S-%L')
+    start_time = Time.now.utc.strftime('%y%m%d_%H%M%S-%L')
     ps_script = <<-EOS.strip
-        . "#{SqlCmd.config['paths']['cache']}\\scripts\\sql_helper_#{start_time}.ps1"
+        . "#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1"
 
         $connectionString = '#{connection_string_updated}'
         $sqlCommand = '#{sql_query.gsub('\'', '\'\'')}'
@@ -28,9 +31,9 @@ module SqlCmd
         ConvertSqlDatasetTo-Json -dataset $dataset
       EOS
 
-    ps_script_file = "#{SqlCmd.config['paths']['cache']}/scripts/ps_script-thread_id-#{Thread.current.object_id}.ps1"
+    ps_script_file = "#{@scripts_cache}/ps_script-thread_id-#{Thread.current.object_id}.ps1"
     FileUtils.mkdir_p ::File.dirname(ps_script_file)
-    FileUtils.cp(SqlCmd.config['sql_cmd']['paths']['powershell_helper_script'], "#{SqlCmd.config['paths']['cache']}/scripts/sql_helper_#{start_time}.ps1")
+    FileUtils.cp(SqlCmd.config['sql_cmd']['paths']['powershell_helper_script'], "#{@scripts_cache}/sql_helper_#{start_time}.ps1")
     ::File.write(ps_script_file, ps_script)
     retry_count = 0
     begin
@@ -74,22 +77,26 @@ module SqlCmd
     end
 
     begin
-      convert_powershell_tables_to_hash(result, return_type)
+      convert_powershell_tables_to_hash(result, return_type, at_timezone: at_timezone, string_to_time_by: string_to_time_by)
     rescue # Change it to use terminal size instead of 120 chars in the error here and above
       EasyIO.logger.fatal "Failed to convert SQL data to hash! ConnectionString: '#{hide_connection_string_password(connection_string)}'\n#{EasyIO::Terminal.line('=')}\n"
       raise
     end
   ensure
-    ::File.delete "#{SqlCmd.config['paths']['cache']}\\scripts\\sql_helper_#{start_time}.ps1" if defined?(start_time) && ::File.exist?("#{SqlCmd.config['paths']['cache']}\\scripts\\sql_helper_#{start_time}.ps1")
+    ::File.delete "#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1" if defined?(start_time) && ::File.exist?("#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1")
   end
 
-  def convert_powershell_tables_to_hash(json_string, return_type = :all_tables) # options: :all_tables, :first_table, :first_row
+  def convert_powershell_tables_to_hash(json_string, return_type = :all_tables, at_timezone: 'UTC', string_to_time_by: '%Y-%m-%d %H:%M:%S %z') # options: :all_tables, :first_table, :first_row
     EasyIO.logger.debug "Output from sql command: #{json_string}" if SqlCmd.config['logging']['verbose']
+    parsed_json = JSON.parse(to_utf8(json_string.sub(/[^{\[]*/, ''))) # Ignore any leading characters other than '{' or '['
+    timezone_table = parsed_json.delete(parsed_json.keys.last)
+    sqlserver_timezone = timezone_table.first.values.first # The last table should be the SQL server's time zone - get the value and remove it from the dataset
     result_hash = if json_string.empty?
                     {}
                   else
-                    convert_javascript_dates_to_time_objects(JSON.parse(to_utf8(json_string.sub(/[^{\[]*/, ''))))
+                    convert_powershell_time_objects(parsed_json, at_timezone: at_timezone, string_to_time_by: string_to_time_by, timezone_override: sqlserver_timezone)
                   end
+
     raise 'No tables were returned by specified sql query!' if result_hash.values.first.nil? && return_type != :all_tables
     case return_type
     when :first_table
@@ -100,20 +107,37 @@ module SqlCmd
       return nil if result_hash.values.first.first.nil?
       result_hash.values.first.first.values.first # Return first column of first row of first table
     else
-      result_hash
+      result_hash.values
     end
   end
 
-  def convert_javascript_dates_to_time_objects(value)
+  # at_timezone: convert all times to this time zone
+  # timezone_override: overwrite the timezone on the time without changing the timestamp value - this occurs before :at_timezone
+  # string_to_time_by: Provide the format of the string to be parsed - see https://ruby-doc.org/stdlib-2.4.1/libdoc/time/rdoc/Time.html#method-c-strptime
+  #   - Set it to nil or false to not parse any strings
+  def convert_powershell_time_objects(value, at_timezone: 'UTC', string_to_time_by: '%Y-%m-%d %H:%M:%S %z', timezone_override: nil, override_strings: false, utc_column: false)
     case value
     when Array
-      value.map { |v| convert_javascript_dates_to_time_objects(v) }
+      value.map { |v| convert_powershell_time_objects(v, at_timezone: at_timezone, string_to_time_by: string_to_time_by, timezone_override: timezone_override, utc_column: utc_column) }
     when Hash
-      Hash[value.map { |k, v| [k, convert_javascript_dates_to_time_objects(v)] }]
+      Hash[value.map { |k, v| [k, convert_powershell_time_objects(v, at_timezone: at_timezone, string_to_time_by: string_to_time_by, timezone_override: timezone_override, utc_column: k =~ /utc/i)] }]
     else
-      javascript_time = value[%r{(?<=/Date\()\d+(?=\)/)}, 0].to_f if value.is_a?(String)
-      # TODO: handle varbinary data
-      javascript_time.nil? || javascript_time == 0 ? value : Time.at(javascript_time / 1000.0)
+      timezone_override = 'UTC' if utc_column
+      return value unless value.is_a?(String)
+      time_from_js = EasyTime.from_javascript_format(value)
+      if time_from_js # A java script time was found
+        value = EasyTime.stomp_timezone(time_from_js, timezone_override)
+        at_timezone ? EasyTime.at_timezone(value, at_timezone) : value
+      else
+        return value unless string_to_time_by
+        begin
+          value = Time.strptime(value, string_to_time_by)
+          value = EasyTime.stomp_timezone(value, timezone_override) if override_strings
+          at_timezone ? EasyTime.at_timezone(value, at_timezone) : value
+        rescue ArgumentError # If an ArgumentError is thrown, the string was not in the :string_to_time_by format expected so it's probably not a time. Return it as is.
+          value
+        end
+      end
     end
   end
 
@@ -208,6 +232,7 @@ module SqlCmd
   end
 
   def migrate_logins(start_time, source_connection_string, destination_connection_string, database_name)
+    start_time = SqlCmd.unify_start_time(start_time)
     import_script_filename = export_logins(start_time, source_connection_string, database_name)
     if ::File.exist?(import_script_filename)
       EasyIO.logger.info "Importing logins on [#{connection_string_part(destination_connection_string, :server)}]..."
@@ -217,17 +242,28 @@ module SqlCmd
     end
   end
 
-  # TODO: use start time to check exported file timestamp to see if it's current
-  def export_logins(_start_time, connection_string, database_name)
-    export_folder = "#{SqlCmd.config['paths']['cache']}/logins"
+  def export_logins(start_time, connection_string, database_name, remove_existing_logins: true)
+    start_time = SqlCmd.unify_start_time(start_time)
+    export_folder = "#{SqlCmd.config['paths']['cache']}/sql_cmd/logins"
     server_name = connection_string_part(connection_string, :server)
     import_script_filename = "#{export_folder}/#{EasyFormat::File.windows_friendly_name(server_name)}_#{database_name}_logins.sql"
     if SqlCmd::Database.info(connection_string, database_name)['DatabaseNotFound']
-      EasyIO.logger.warn "Source database was not found. Unable to export logins#{' but import file already exists..' if ::File.exist?(import_script_filename)}."
-      return import_script_filename
+      warning_message = 'Source database was not found'
+      unless ::File.exist?(import_script_filename)
+        EasyIO.logger.warn "#{warning_message}. Unable to export logins! Ensure logins are migrated or migrate them manually!"
+        return import_script_filename
+      end
+
+      warning_message += if File.mtime(import_script_filename) >= start_time
+                           ' but the import logins script file already exists. Proceeding...'
+                         else
+                           ' and the import logins script file is out of date. Ensure logins are migrated or migrate them manually!'
+                         end
+      EasyIO.logger.warn warning_message
+      return import_script_filename # TODO: attempt to create logins anyway instead of returning a non-existent script file
     end
     sql_script = ::File.read("#{sql_script_dir}/Security/GenerateCreateLoginsScript.sql")
-    values = { 'databasename' => database_name }
+    values = { 'databasename' => database_name, 'removeexistinglogins' => remove_existing_logins }
     EasyIO.logger.info "Exporting logins associated with database: [#{database_name}] on [#{server_name}]..."
     import_script = execute_query(connection_string, sql_script, return_type: :scalar, values: values, readonly: true, retries: 3)
     return nil if import_script.nil? || import_script.empty?

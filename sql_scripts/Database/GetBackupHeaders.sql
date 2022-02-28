@@ -1,6 +1,7 @@
 SET NOCOUNT ON
 
 DECLARE @bkup_files nvarchar(max)
+DECLARE @credential nvarchar(max)
 DECLARE @rowcount int
 
 DECLARE @HeaderOnly_cmd nvarchar(max)
@@ -9,6 +10,7 @@ DECLARE @Version14Plus bit
 DECLARE @SQLMajorVersion nvarchar(128)
 
 SET @bkup_files = '$(bkupfiles)'
+SET @credential = '$(credential)'
 
 SET @SQLMajorVersion = CONVERT(NVARCHAR(128), SERVERPROPERTY('ProductVersion'))
 SET @SQLMajorVersion = LEFT(@SQLMajorVersion, CHARINDEX('.', @SQLMajorVersion) - 1)
@@ -82,7 +84,8 @@ INSERT INTO @BackupSets
 exec (''
 RESTORE HEADERONLY
 FROM ' + REPLACE(@bkup_files, '''', '''''') + '
-WITH NOUNLOAD'')
+WITH ' + CASE WHEN @credential NOT LIKE '' THEN 'CREDENTIAL = ''''' + @credential + ''''', ' ELSE '' END + '
+    NOUNLOAD'')
 
 SELECT * FROM @BackupSets
 ORDER BY BackupFinishDate DESC

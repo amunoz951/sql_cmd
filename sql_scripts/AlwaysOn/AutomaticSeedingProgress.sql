@@ -1,3 +1,6 @@
+DECLARE @database_name NVARCHAR(512)
+SET @database_name = '$(databasename)'
+
 SELECT TOP 1
 database_name,
 ag.name as ag_name,
@@ -15,8 +18,8 @@ database_size_bytes,
 start_time_utc,
 end_time_utc,
 estimate_time_complete_utc,
-CASE WHEN current_state = 'COMPLETED' THEN 100 ELSE ROUND((CONVERT(float, estimate_time_complete_utc - start_time_utc) - CONVERT(float, estimate_time_complete_utc - GETUTCDATE()))/CONVERT(float, estimate_time_complete_utc - start_time_utc), 1) * 100 END AS [time_elapsed_percent_complete],
-CASE WHEN current_state = 'COMPLETED' THEN 100 ELSE ROUND(transferred_size_bytes/database_size_bytes, 1) * 100 END AS [transferred_size_percent_complete],
+CASE WHEN current_state = 'COMPLETED' THEN 100 ELSE ROUND((CONVERT(float, estimate_time_complete_utc - start_time_utc) - CONVERT(float, estimate_time_complete_utc - GETUTCDATE()))/CONVERT(float, estimate_time_complete_utc - start_time_utc) * 100, 1) END AS [time_elapsed_percent_complete],
+CASE WHEN current_state = 'COMPLETED' THEN 100 ELSE ROUND(CONVERT(float, transferred_size_bytes) / CONVERT(float, database_size_bytes) * 100, 1) END AS [transferred_size_percent_complete],
 total_disk_io_wait_time_ms,
 total_network_wait_time_ms,
 is_compression_enabled
@@ -27,5 +30,5 @@ JOIN sys.dm_hadr_automatic_seeding AS dhas
 ON dhas.ag_id = ag.group_id
 LEFT JOIN sys.dm_hadr_physical_seeding_stats AS dhpss
 ON adc.database_name = dhpss.local_database_name
-WHERE database_name = '$(databasename)'
+WHERE database_name = @database_name
 ORDER BY start_time DESC

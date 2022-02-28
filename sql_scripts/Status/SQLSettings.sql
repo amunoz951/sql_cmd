@@ -11,11 +11,9 @@ DECLARE @sqlcompression bit
 SELECT @sqlversion = SERVERPROPERTY('productversion')
 
 -- Data files section
-select Top (1) @datafiledir = reverse(substring(reverse(physical_name), charindex('\', reverse(physical_name)),LEN(physical_name) -1)) from sys.master_files
-where type_desc = 'ROWS' and (physical_name like '%nbo%' OR physical_name like '%ml[_]%')
+select @datafiledir = CONVERT(NVARCHAR(255), SERVERPROPERTY('InstanceDefaultDataPath'))
 
-select Top (1) @logfiledir = reverse(substring(reverse(physical_name), charindex('\', reverse(physical_name)),LEN(physical_name) -1)) from sys.master_files
-where type_desc = 'LOG' and (physical_name like '%nbo%' OR physical_name like '%ml[_]%')
+select @logfiledir = CONVERT(NVARCHAR(255), SERVERPROPERTY('InstanceDefaultLogPath'))
 
 select Top (1) @datafiledir = coalesce(@datafiledir, reverse(substring(reverse(physical_name), charindex('\', reverse(physical_name)),LEN(physical_name) -1))) from sys.master_files
 where type_desc = 'ROWS' and (physical_name like '%sqldata%' OR physical_name like '%\data%')

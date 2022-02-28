@@ -2,9 +2,11 @@ SET NOCOUNT ON
 
 DECLARE @database_name nvarchar(max)
 DECLARE @backup_name nvarchar(max)
+DECLARE @credential nvarchar(max)
 DECLARE @database_size int
 DECLARE @disk_files nvarchar(max)
 DECLARE @backup_location nvarchar(max)
+DECLARE @backup_type nvarchar(5)
 DECLARE @file_counter int
 DECLARE @size_increment int
 DECLARE @i int
@@ -23,9 +25,11 @@ DECLARE @backup_file_extension nvarchar(4)
 
 SET @database_name = '$(bkupdbname)'
 SET @backup_name = '$(bkupname)'
+SET @credential = '$(credential)'
 SET @log_only = '$(logonly)'
 SET @compression = '$(compressbackup)'
-SET @backup_location = '$(bkupdestdir)'
+SET @backup_location = '$(bkupdest)'
+SET @backup_type = '$(bkuptype)'
 SET @split_files = '$(splitfiles)'
 SET @format = '$(formatbackup)'
 SET @copy_only = '$(copyonly)'
@@ -34,9 +38,10 @@ SET @skip = '$(skip)'
 SET @rewind = '$(rewind)'
 SET @unload = '$(unload)'
 SET @stats = '$(stats)'
+SET @size_increment = '$(bkuppartmaxsize)'
 SET @file_counter = 1
 
-IF (RIGHT(@backup_location, 1) != '\') SET @backup_location += '\';
+IF (RIGHT(@backup_location, 1) != '\' AND @backup_type LIKE 'DISK') SET @backup_location += '\';
 SET @backup_file_extension = CASE WHEN @log_only = 1 THEN '.trn' ELSE '.bak' END
 
 IF NOT EXISTS(SELECT * FROM sys.databases WHERE name = @database_name)
@@ -45,21 +50,20 @@ BEGIN
 	RETURN
 END
 
-IF @split_files = 1
+IF @split_files = 1 AND @backup_type != 'URL'
 BEGIN
 	SELECT @database_size = CAST(SUM(size) * 8. / 1024 AS DECIMAL(8,2))
 	FROM sys.master_files WITH(NOWAIT)
 	WHERE database_id = DB_ID(@database_name) -- for current db
 	GROUP BY database_id
 
-	SET @size_increment = 58800
 	SET @i = @size_increment
 
 	WHILE (@i < @database_size)
 	BEGIN
-		IF @disk_files is null SET @disk_files = ' DISK = N''' + @backup_location + @backup_name + '.part1' + @backup_file_extension + ''''
+		IF @disk_files is null SET @disk_files = @backup_type + ' = N''' + @backup_location + @backup_name + '.part1' + @backup_file_extension + ''''
 		SET @file_counter = @file_counter + 1
-		SET @disk_files = @disk_files + ',  DISK = N''' + @backup_location + @backup_name + '.part' + CONVERT(nvarchar(2),@file_counter) + @backup_file_extension + ''''
+		SET @disk_files = @disk_files + ', ' + @backup_type + ' = N''' + @backup_location + @backup_name + '.part' + CONVERT(nvarchar(2),@file_counter) + @backup_file_extension + ''''
 		SET @i = @i + @size_increment
 	END
 END
@@ -70,7 +74,7 @@ END
 
 IF (@file_counter = 1)
 BEGIN
-	SET @disk_files = ' DISK = N''' + @backup_location + @backup_name + @backup_file_extension + ''''
+	SET @disk_files = @backup_type + ' = N''' + @backup_location + @backup_name + @backup_file_extension + ''''
 END
 
 SET @sql = 'BACKUP ' + CASE WHEN @log_only = 1 THEN 'LOG' ELSE 'DATABASE' END + ' [' + @database_name + '] TO  ' + @disk_files + ' WITH ' +
@@ -81,7 +85,8 @@ SET @sql = 'BACKUP ' + CASE WHEN @log_only = 1 THEN 'LOG' ELSE 'DATABASE' END + 
 		   ', NAME = N''' + @database_name + '-Full Database Backup'', ' +
 		   CASE WHEN @skip = 1 THEN 'SKIP' ELSE 'NOSKIP' END + ', ' +
 		   CASE WHEN @rewind = 1 THEN 'REWIND' ELSE 'NOREWIND' END + ', ' +
-		   CASE WHEN @unload = 1 THEN 'UNLOAD' ELSE 'NOUNLOAD' END + ', STATS = ' + @stats
+		   CASE WHEN @unload = 1 THEN 'UNLOAD' ELSE 'NOUNLOAD' END + ', ' +
+		   CASE WHEN @credential NOT LIKE '' THEN 'CREDENTIAL = ''' + @credential + ''', ' ELSE '' END + 'STATS = ' + @stats
 
 PRINT ('')
 PRINT ('Starting backup of [' + @database_name + ']...')

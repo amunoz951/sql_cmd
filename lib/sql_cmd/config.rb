@@ -2,17 +2,27 @@ module SqlCmd
   module_function
 
   def config
-    @config ||= EasyJSON.config(defaults: defaults)
+    @config ||= EasyJSON.config(defaults: defaults, required_keys: required_keys)
+  end
+
+  def required_keys
+    {
+      'sql_cmd' => {
+        'backups' => {
+          'always_on_backup_temp_dir' => nil,
+          'default_destination' => nil,
+        },
+      },
+    }
   end
 
   def defaults
     {
-      'environment' => {
-        'policy_group' => nil,
-        'chef' => false,
-      },
       'paths' => {
-        'cache' => ::File.expand_path("#{Dir.pwd}/cache"),
+        'cache' => Dir.tmpdir,
+      },
+      'environment' => {
+        'timezone' => 'UTC',
       },
       'logging' => {
         'level' => 'info',
@@ -21,6 +31,7 @@ module SqlCmd
       'sql_cmd' => {
         'backups' => {
           'always_on_backup_temp_dir' => nil, # where backups will go when adding to availability groups and seeding_mode is manual or nil
+          'always_on_backup_url' => nil, # where backups will go when adding to availability groups and seeding_mode is manual or nil - supercedes temp dir above
           'default_destination' => nil, # where backups will go by default
           'backup_to_host_sql_server' => false, # if set to true, will backup databases to the SQL host instead of the default destination
           'default_backup_share' => nil, # the name of the windows share relative to SQL hosts where backups go when set to backup to sql hosts
