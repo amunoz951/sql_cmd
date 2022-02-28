@@ -215,6 +215,7 @@ module SqlCmd
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files, options) unless asynchronous
       end
       import_security(connection_string, database_name, import_script_path, backup_url, options) unless import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
+      apply_recovery_model(connection_string, database_name, options[:recovery_model]) if options[:recovery_model]
       SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
       ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica'] || full_backup_method == :skip
     end
@@ -527,6 +528,21 @@ module SqlCmd
       return result if result.empty?
       result['DatabaseName'] ||= database_name
       result
+    end
+
+    def apply_recovery_model(connection_string, database_name, options)
+      return if recovery_model_set?(connection_string, database_name, options)
+      recovery_model = options['recovery_model'] || 'FULL'
+      rollback_cmd = options['rollback'].nil? || 'ROLLBACK IMMEDIATE' # other options: ROLLBACK AFTER 30, NO_WAIT
+      sql_script = "ALTER DATABASE ['#{database_name}'] SET RECOVERY #{recovery_model} WITH #{rollback_cmd}"
+      SqlCmd.execute_query(connection_string, sql_script) || {}
+      raise "Failed to set recovery model to '#{recovery_model}'!\n\n Command attempted: #{sql_script}" unless recovery_model_set?(connection_string, database_name, options)
+    end
+
+    def recovery_model_set?(connection_string, database_name, options)
+      recovery_model = options['recovery_model'] || 'FULL'
+      sql_script = "SELECT 1 FROM master.sys.databases WHERE recovery_model_desc LIKE '#{recovery_model}' and name = '#{database_name}'"
+      SqlCmd.execute_query(connection_string, sql_script, return_type: :scalar, readonly: true) || false
     end
 
     def export_security(start_time, connection_string, database_name, storage_url = nil, options = {})
