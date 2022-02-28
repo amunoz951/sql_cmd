@@ -13,14 +13,38 @@ function Invoke-SQL {
     $command = new-object system.data.sqlclient.sqlcommand($sqlCommand,$connection)
     $command.CommandTimeout = $timeout
     $adapter = New-Object System.Data.sqlclient.sqlDataAdapter $command
+    $tables = [System.Collections.ArrayList]@()
+    $tableCount = 0
     $connection.Open()
+    $timeZoneCommand = 'BEGIN TRY
+        DECLARE @TimeZone VARCHAR(50)
+        EXEC MASTER.dbo.xp_regread ''HKEY_LOCAL_MACHINE'',''SYSTEM\CurrentControlSet\Control\TimeZoneInformation'',''TimeZoneKeyName'',@TimeZone OUT
+        SELECT * FROM (SELECT @TimeZone AS TimeZone) AS SQLServerTimeZone
+      END TRY
+      BEGIN CATCH
+        SELECT * FROM (SELECT ''FailedToReadTimeZone'' AS TimeZone) AS SQLServerTimeZone
+      END CATCH'
 
     foreach ($sqlcmd in $sqlCommands) {
       if ([string]::IsNullOrEmpty($sqlcmd)) { continue }
       $command.CommandText = $sqlcmd
       $dataset = New-Object System.Data.DataSet
       $adapter.Fill($dataSet) | Out-Null
-      $tables = $tables + $dataSet.Tables
+      foreach ($table in $dataSet.Tables) {
+        $tableCount++
+        $table.TableName = "Table$tableCount"
+        $tables.Add($table) | Out-Null
+      }
+    }
+
+    # Get the server's time zone
+    $command.CommandText = $timeZoneCommand
+    $dataset = New-Object System.Data.DataSet
+    $adapter.Fill($dataSet) | Out-Null
+    foreach ($table in $dataSet.Tables) {
+      $tableCount++
+      $table.TableName = "Table$tableCount"
+      $tables.Add($table) | Out-Null
     }
 
     $connection.Close()
