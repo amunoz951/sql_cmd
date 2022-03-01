@@ -215,7 +215,8 @@ module SqlCmd
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files, options) unless asynchronous
       end
       import_security(connection_string, database_name, import_script_path, backup_url, options) unless import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
-      apply_recovery_model(connection_string, database_name, options[:recovery_model]) if options[:recovery_model]
+      SqlCmd.update_sql_compatibility(connection_string, database_name, options['compatibility_level']) if options['compatibility_level']
+      apply_recovery_model(connection_string, database_name, options['recovery_model']) if options['recovery_model']
       SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
       ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica'] || full_backup_method == :skip
     end
@@ -596,7 +597,6 @@ module SqlCmd
 
     def default_restore_options
       {
-        'simplerecovery' => true, # Change recovery mode to simple after performing restore
         'logonly' => false, # Restore a log backup
         'recovery' => true, # Recovers the database after restoring - Should be used unless additional log files are to be restored
         'replace' => false, # Overwrites the existing database

@@ -110,7 +110,7 @@ module SqlCmd
       if !idempotent || !copy_only_full_backup_exists || !copy_only_backup_current || copy_only_full_backup_header.nil? || replica_database_info['LastRestoreDate'].nil? ||
          replica_database_info['LastRestoreDate'] < database_info['LastCopyOnlyFullBackupDate'] || replica_database_info['LastRestoreLSN'] < database_info['LastCopyOnlyLSN']
         EasyIO.logger.info 'Restoring database to secondary replica...'
-        restore_options = { 'recovery' => false, 'unload' => false, 'simplerecovery' => false, 'secondaryreplica' => true, 'datafilelogicalname' => '', 'logfilelogicalname' => '' }
+        restore_options = { 'recovery' => false, 'unload' => false, 'secondaryreplica' => true, 'datafilelogicalname' => '', 'logfilelogicalname' => '' }
         SqlCmd::Database.restore(copy_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: restore_options)
       else
         EasyIO.logger.info 'Restore of CopyOnly database backup current. Skipping restore of CopyOnly database backup...'
@@ -126,7 +126,7 @@ module SqlCmd
 
       # Restore log on secondary replica
       EasyIO.logger.header 'AlwaysOn Log Restore to Replica'
-      restore_options = { 'recovery' => false, 'unload' => false, 'simplerecovery' => false, 'logonly' => true, 'secondaryreplica' => true }
+      restore_options = { 'recovery' => false, 'unload' => false, 'logonly' => true, 'secondaryreplica' => true }
       SqlCmd::Database.restore(log_only_backup_start_time, replica_connection_string, database_name, backup_folder: values['backupdir'], backup_url: backup_url, backup_basename: database_name, options: restore_options)
 
       # Add to availability group on secondary replica
