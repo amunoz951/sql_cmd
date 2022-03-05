@@ -109,7 +109,7 @@ module SqlCmd
 
   # Returns the headers from the backup set provided. Pass an array of path strings to the backup files.
   def get_sql_backup_headers(connection_string, backup_files, options = {})
-    EasyFormat.validate_parameters(method(__method__), binding)
+    EasyFormat.validate_parameters(method(__method__), binding, %W(options))
     disk_backup_files = backup_fileset_names(backup_files)
     sql_script = ::File.read("#{sql_script_dir}/Database/GetBackupHeaders.sql")
     options['bkupfiles'] = disk_backup_files
