@@ -216,7 +216,7 @@ module SqlCmd
       end
       import_security(connection_string, database_name, import_script_path, backup_url, options) unless import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
       SqlCmd.update_sql_compatibility(connection_string, database_name, options['compatibility_level']) if options['compatibility_level']
-      apply_recovery_model(connection_string, database_name, options['recovery_model']) if options['recovery_model']
+      apply_recovery_model(connection_string, database_name, options) if options['recovery_model']
       SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
       ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica'] || full_backup_method == :skip
     end
@@ -533,11 +533,17 @@ module SqlCmd
 
     def apply_recovery_model(connection_string, database_name, options)
       return if recovery_model_set?(connection_string, database_name, options)
-      recovery_model = options['recovery_model'] || 'FULL'
-      rollback_cmd = options['rollback'].nil? || 'ROLLBACK IMMEDIATE' # other options: ROLLBACK AFTER 30, NO_WAIT
-      sql_script = "ALTER DATABASE ['#{database_name}'] SET RECOVERY #{recovery_model} WITH #{rollback_cmd}"
+      options['recovery_model'] ||= 'FULL'
+      options['rollback'] ||= 'ROLLBACK IMMEDIATE' # other options: ROLLBACK AFTER 30, NO_WAIT
+      sql_script = "ALTER DATABASE [#{database_name}] SET RECOVERY #{options['recovery_model']} WITH #{options['rollback']}"
       SqlCmd.execute_query(connection_string, sql_script) || {}
-      raise "Failed to set recovery model to '#{recovery_model}'!\n\n Command attempted: #{sql_script}" unless recovery_model_set?(connection_string, database_name, options)
+      failure_message = <<-EOS
+        Failed to set recovery model to '#{options['recovery_model']}'!\n
+          Command attempted: #{sql_script}\n
+          ConnectionString: '#{SqlCmd.hide_connection_string_password(connection_string)}'
+          #{'=' * 120}\n"
+      EOS
+      raise failure_message unless recovery_model_set?(connection_string, database_name, options)
     end
 
     def recovery_model_set?(connection_string, database_name, options)
