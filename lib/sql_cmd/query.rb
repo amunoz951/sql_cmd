@@ -332,22 +332,19 @@ module SqlCmd
     end
   end
 
-  def update_sql_compatibility(connection_string, compatibility_level) # compatibility_level options: :sql_2008, :sql_2012
-    sql_compatibility_script = case compatibility_level
-                               when :sql_2008
-                                 ::File.read("#{sql_script_dir}/Database/SetSQL2008Compatibility.sql")
-                               when :sql_2012
-                                 ::File.read("#{sql_script_dir}/Database/SetSQL2012Compatibility.sql")
-                               else
-                                 raise "Compatibility level #{compatibility_level} not yet supported!"
-                               end
-    EasyIO.logger.info "Ensuring SQL compatibility is set to #{compatibility_level}..."
-    compatibility_result = execute_query(connection_string, sql_compatibility_script, return_type: :scalar, retries: 3)
+  def update_sql_compatibility(connection_string, database_name, compatibility_level) # compatibility_level options: :sql_2008, :sql_2012, :sql_2016, :sql_2017, :sql_2019
+    sql_compatibility_script = ::File.read("#{sql_script_dir}/Database/SetSQLCompatibility.sql")
     compatibility_levels =
       {
         sql_2008: 100,
         sql_2012: 110,
+        sql_2014: 120,
+        sql_2016: 130,
+        sql_2017: 140,
+        sql_2019: 150,
       }
-    EasyIO.logger.info "Compatibility level is set to #{compatibility_levels.key(compatibility_result)}"
+    values = { 'databasename' => database_name, 'compatibility_level' => compatibility_levels[compatibility_level] }
+    EasyIO.logger.info "Ensuring SQL compatibility is set to #{compatibility_level}..."
+    compatibility_result = execute_query(connection_string, sql_compatibility_script, return_type: :scalar, values: values, retries: 3)
   end
 end

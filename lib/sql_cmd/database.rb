@@ -215,6 +215,8 @@ module SqlCmd
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files, options) unless asynchronous
       end
       import_security(connection_string, database_name, import_script_path, backup_url, options) unless import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
+      SqlCmd.update_sql_compatibility(connection_string, database_name, options['compatibility_level']) if options['compatibility_level']
+      apply_recovery_model(connection_string, database_name, options) if options['recovery_model']
       SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
       ensure_full_backup_has_occurred(connection_string, database_name, full_backup_method: full_backup_method, database_info: database_info) unless options['secondaryreplica'] || full_backup_method == :skip
     end
@@ -529,6 +531,27 @@ module SqlCmd
       result
     end
 
+    def apply_recovery_model(connection_string, database_name, options)
+      return if recovery_model_set?(connection_string, database_name, options)
+      options['recovery_model'] ||= 'FULL'
+      options['rollback'] ||= 'ROLLBACK IMMEDIATE' # other options: ROLLBACK AFTER 30, NO_WAIT
+      sql_script = "ALTER DATABASE [#{database_name}] SET RECOVERY #{options['recovery_model']} WITH #{options['rollback']}"
+      SqlCmd.execute_query(connection_string, sql_script) || {}
+      failure_message = <<-EOS
+        Failed to set recovery model to '#{options['recovery_model']}'!\n
+          Command attempted: #{sql_script}\n
+          ConnectionString: '#{SqlCmd.hide_connection_string_password(connection_string)}'
+          #{'=' * 120}\n"
+      EOS
+      raise failure_message unless recovery_model_set?(connection_string, database_name, options)
+    end
+
+    def recovery_model_set?(connection_string, database_name, options)
+      recovery_model = options['recovery_model'] || 'FULL'
+      sql_script = "SELECT 1 FROM master.sys.databases WHERE recovery_model_desc LIKE '#{recovery_model}' and name = '#{database_name}'"
+      SqlCmd.execute_query(connection_string, sql_script, return_type: :scalar, readonly: true) || false
+    end
+
     def export_security(start_time, connection_string, database_name, storage_url = nil, options = {})
       start_time = SqlCmd.unify_start_time(start_time)
       server_name = SqlCmd.connection_string_part(connection_string, :server)
@@ -580,7 +603,6 @@ module SqlCmd
 
     def default_restore_options
       {
-        'simplerecovery' => true, # Change recovery mode to simple after performing restore
         'logonly' => false, # Restore a log backup
         'recovery' => true, # Recovers the database after restoring - Should be used unless additional log files are to be restored
         'replace' => false, # Overwrites the existing database

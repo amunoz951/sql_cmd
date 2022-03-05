@@ -15,7 +15,6 @@ DECLARE @replcheck_cmd nvarchar(max)
 DECLARE @change_logical_names_cmd nvarchar(max)
 DECLARE @rowcount int
 DECLARE @log_only bit
-DECLARE @simple_recovery bit
 DECLARE @recovery bit
 DECLARE @replace bit
 DECLARE @keep_replication bit
@@ -35,7 +34,6 @@ SET @data_file_logical_name = '$(datafilelogicalname)'
 SET @log_file = '$(logfile)'
 SET @log_file_logical_name = '$(logfilelogicalname)'
 SET @log_only = '$(logonly)'
-SET @simple_recovery = '$(simplerecovery)'
 SET @recovery = '$(recovery)'
 SET @replace = '$(replace)'
 SET @keep_replication = '$(keepreplication)'
@@ -174,12 +172,6 @@ SET @database_cmd = 'RESTORE ' + CASE WHEN @log_only = 1 THEN 'LOG' ELSE 'DATABA
 SET @change_logical_names_cmd = 'ALTER DATABASE [' + @db_name + '] MODIFY FILE ( NAME = ' + @data_file_logical_name + ', NEWNAME = ' + @db_name + '_Data );' +
                                'ALTER DATABASE [' + @db_name + '] MODIFY FILE ( NAME = ' + @log_file_logical_name + ', NEWNAME = ' + @db_name + '_Log );'
 
-SET @setproperties_cmd =
-'
-USE [master]
-ALTER DATABASE [' + @db_name + '] SET RECOVERY SIMPLE WITH NO_WAIT
-'
-
 IF @db_state != 1 -- If it's not restoring
 BEGIN
     EXEC (@prepareolddb_cmd)
@@ -190,9 +182,4 @@ EXEC (@database_cmd)
 IF @db_state != 1
 BEGIN
     EXEC (@change_logical_names_cmd)
-END
-
-IF @simple_recovery = 1
-BEGIN
-    EXEC (@setproperties_cmd)
 END
