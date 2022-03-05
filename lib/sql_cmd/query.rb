@@ -346,7 +346,5 @@ module SqlCmd
     values = { 'databasename' => database_name, 'compatibility_level' => compatibility_levels[compatibility_level] }
     EasyIO.logger.info "Ensuring SQL compatibility is set to #{compatibility_level}..."
     compatibility_result = execute_query(connection_string, sql_compatibility_script, return_type: :scalar, values: values, retries: 3)
-
-    EasyIO.logger.info "Compatibility level is set to #{compatibility_levels.key(compatibility_result)} (#{compatibility_result})"
   end
 end

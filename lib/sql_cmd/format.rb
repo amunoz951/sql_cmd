@@ -4,17 +4,17 @@ module SqlCmd
   def connection_string_part_regex(part)
     case part
     when :server
-      /(server|data source)(\s*\=\s*)([^;]+)(;)?/i
+      /(server|data source)(\s*\=\s*)([^;]*)(;)?/i
     when :database
-      /(database|initial catalog)(\s*\=\s*)([^;]+)(;)?/i
+      /(database|initial catalog)(\s*\=\s*)([^;]*)(;)?/i
     when :user # array of user/password or integrated security
-      /(user id|uid)(\s*\=\s*)([^;]+)(;)?/i
+      /(user id|uid)(\s*\=\s*)([^;]*)(;)?/i
     when :password
-      /(password|pwd)(\s*\=\s*)([^;]+)(;)?/i
+      /(password|pwd)(\s*\=\s*)([^;]*)(;)?/i
     when :integrated
-      /integrated security\s*\=\s*[^;]+(;)?/i
+      /integrated security\s*\=\s*[^;]*(;)?/i
     when :applicationintent
-      /applicationintent\s*\=\s*[^;]+(;)?/i
+      /applicationintent\s*\=\s*[^;]*(;)?/i
     else
       raise "#{part} is not a supported connection string part!"
     end
