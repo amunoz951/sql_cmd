@@ -103,11 +103,11 @@ module SqlCmd
       destination_sql_version = SqlCmd.get_sql_server_settings(destination_connection_string)['SQLVersion']
       validate_restorability(source_sql_version, destination_sql_version, source_type: :database) unless permissions_only
       raise "Failed to migrate database! Destination and source servers are the same! (#{source_server_name})" if source_server_name =~ /#{Regexp.escape(destination_server_name)}/i
-      SqlCmd.migrate_logins(start_time, source_connection_string, destination_connection_string, database_name)
       if database_info['DatabaseNotFound'] && (destination_database_info['DatabaseNotFound'] || destination_database_info['DatabaseRestoring'] || destination_database_info['LastRestoreDate'] < start_time)
         raise "Failed to migrate database. Database [#{database_name}] does not exist on [#{source_server_name}]!"
       end
       SqlCmd::Database.duplicate(start_time, source_connection_string, database_name, destination_connection_string, database_name, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename, force_restore: force_restore, full_backup_method: full_backup_method, options: options) unless permissions_only
+      SqlCmd.migrate_logins(start_time, source_connection_string, destination_connection_string, database_name)
 
       replication_active = SqlCmd::Database.info(source_connection_string, database_name)['ReplicationActive'] # Refresh database_info to see if the source still has replication enabled
       if replication_active
