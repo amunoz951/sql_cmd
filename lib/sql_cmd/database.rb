@@ -110,7 +110,10 @@ module SqlCmd
       SqlCmd::Database.duplicate(start_time, source_connection_string, database_name, destination_connection_string, database_name, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename, force_restore: force_restore, full_backup_method: full_backup_method, options: options) unless permissions_only
 
       replication_active = SqlCmd::Database.info(source_connection_string, database_name)['ReplicationActive'] # Refresh database_info to see if the source still has replication enabled
-      raise "Replication must now be dropped from [#{source_server_name}] in order to proceed. Before dropping replication from the source server, script out replication and script it into the migrated database on [#{destination_server_name}] if you wish to preserve replication. Then rerun the migration." if replication_active
+      if replication_active
+        return if options['return_at_replication_active']
+        raise "Replication must now be dropped from [#{source_server_name}] in order to proceed. Before dropping replication from the source server, script out replication and script it into the migrated database on [#{destination_server_name}] if you wish to preserve replication. Then rerun the migration."
+      end
       SqlCmd::AlwaysOn.remove_from_availability_group(source_connection_string, database_name)
       SqlCmd::Database.drop(source_connection_string, database_name)
     end
@@ -360,7 +363,7 @@ module SqlCmd
           backup_destination = backup_url.nil? || backup_url.empty? ? backup_folder : backup_url
           backup_files, backup_basename = SqlCmd.get_backup_files(sql_server_settings, options, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename)
           if backup_files.empty?
-            EasyIO.logger.warn "Unable to verify backup files. Backup destination '#{backup_destination}' is inaccessible!"
+            EasyIO.logger.warn "Unable to verify backup files. No backup files found or backup destination '#{backup_destination}' is inaccessible!"
             return :current
           end
           sql_backup_header = SqlCmd.get_sql_backup_headers(connection_string, backup_files, options).first # TODO: 3 seconds
