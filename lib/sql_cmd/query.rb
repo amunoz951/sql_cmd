@@ -83,7 +83,18 @@ module SqlCmd
       raise
     end
   ensure
-    ::File.delete "#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1" if defined?(start_time) && ::File.exist?("#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1")
+    retry_count = 0
+    retries = 3
+    retry_delay = 3
+    begin
+      ::File.delete "#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1" if defined?(start_time) && ::File.exist?("#{@scripts_cache_windows}\\sql_helper_#{start_time}.ps1")
+    rescue # Try to delete the file 3 times
+      if (retry_count += 1) <= retries
+        sleep(retry_delay)
+        retry
+      end
+      raise
+    end
   end
 
   def convert_powershell_tables_to_hash(json_string, return_type = :all_tables, at_timezone: 'UTC', string_to_time_by: '%Y-%m-%d %H:%M:%S %z') # options: :all_tables, :first_table, :first_row
