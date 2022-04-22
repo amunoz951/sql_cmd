@@ -54,22 +54,27 @@ module SqlCmd
     files.map { |f, properties| ["#{base_url}/#{f}", properties[:last_modified]] }.to_h
   end
 
-  def backup_location_and_basename(start_time, connection_string, database_name, options = {}, backup_url: nil)
+  def backup_location_and_basename(start_time, connection_string, database_name, options = {}, backup_folder: nil, backup_url: nil, backup_basename: nil)
     start_time = SqlCmd.unify_start_time(start_time)
     database_info = SqlCmd::Database.info(connection_string, database_name)
     server_settings = get_sql_server_settings(connection_string)
     backup_type = backup_url.nil? || backup_url.empty? ? 'DISK' : 'URL'
     if database_info['DatabaseNotFound']
-      backup_name = "#{database_name}_#{EasyTime.yyyymmdd(start_time)}"
-      return [backup_url, backup_name] if backup_type == 'URL'
+      backup_basename = "#{database_name}_#{EasyTime.yyyymmdd(start_time)}"
+      return [backup_url, backup_basename] if backup_type == 'URL'
       backup_unc_location = SqlCmd.config['sql_cmd']['backups']['backup_to_host_sql_server'] ? "\\\\#{server_settings['ServerName']}\\#{SqlCmd.config['sql_cmd']['backups']['default_backup_share']}" : SqlCmd.config['sql_cmd']['backups']['default_destination']
-      return Dir.glob("#{backup_unc_location}/#{backup_name}*".tr('\\', '/')).empty? ? [nil, nil] : [backup_unc_location, backup_name]
+      return Dir.glob("#{backup_unc_location}/#{backup_basename}*".tr('\\', '/')).empty? ? [nil, nil] : [backup_unc_location, backup_basename]
     end
 
     backup_file_path = database_info['BackupFileLocation']
+    if backup_file_path =~ /^\{.*\}$/
+      backup_basename ||= "#{database_name}_#{EasyTime.yyyymmdd(start_time)}"
+      backup_files, backup_basename = SqlCmd::Database.existing_backup_files(server_settings, options, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename, log_only: options['logonly'])
+      backup_file_path = backup_files.first
+    end
     backup_file = ::File.basename(backup_file_path)
-    backup_name = backup_basename(backup_file)
-    return [nil, backup_name] if backup_type == 'URL'
+    backup_basename = backup_basename_from_path(backup_file)
+    return [nil, backup_basename] if backup_type == 'URL'
     backup_unc_location = to_unc_path(::File.dirname(backup_file_path), server_settings['ServerName'])
     backup_folder = if ::File.exist?("#{backup_unc_location}/#{backup_file}")
                       backup_unc_location
@@ -77,7 +82,7 @@ module SqlCmd
                       "\\\\#{server_settings['ServerName']}\\#{SqlCmd.config['sql_cmd']['backups']['default_backup_share']}"
                     end
     return [nil, nil] unless defined?(backup_folder)
-    [backup_folder, backup_name]
+    [backup_folder, backup_basename]
   end
 
   # sql_server_settings can be for any server that has network access to these files
