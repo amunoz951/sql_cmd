@@ -263,5 +263,10 @@ module SqlCmd
       raise 'Failed to remove database from AlwaysOn Availability Group' unless database_info['AvailabilityGroup'].nil? && replica_database_info['AvailabilityGroup'].nil?
       EasyIO.logger.info "[#{database_name}] removed from AlwaysOn availability group successfully..."
     end
+
+    def enabled?(connection_string)
+      server_info = SqlCmd.get_sql_server_settings(connection_string)
+      server_info['AvailabilityGroup'].nil? || server_info['SecondaryReplica'].nil?
+    end
   end
 end
