@@ -313,10 +313,10 @@ module SqlCmd
       SqlCmd.run_sql_as_job(connection_string, sql_backup_script, "Backup: #{backup_basename}", values: values, retries: 1, retry_delay: 30)
     end
 
-    def monitor_backup(backup_start_time, connection_string, database_name, options = {}, backup_folder: nil, backup_url: nil, backup_basename: nil, log_only: false, retries: 3, retry_delay: 10)
+    def monitor_backup(backup_start_time, connection_string, database_name, options = {}, job_name: nil, backup_folder: nil, backup_url: nil, backup_basename: nil, log_only: false, retries: 3, retry_delay: 10)
       backup_start_time = SqlCmd.unify_start_time(backup_start_time)
       backup_status_script = ::File.read("#{SqlCmd.sql_script_dir}/Status/BackupProgress.sql")
-      job_name = "Backup: #{database_name}"
+      job_name ||= "Backup: #{database_name}"
       EasyIO.logger.info 'Checking backup status...'
       EasyIO.logger.debug "Backup start time: #{backup_start_time}"
       sleep(3) # Give the job time to start
@@ -340,9 +340,9 @@ module SqlCmd
             # job_message = job_history_message(connection_string, job_name) unless result == :current
             if job_started # Check if job has timed out after stopping without completing
               job_completion_time ||= Time.now
-              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
+              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_name, job_status: job_status, job_started: job_started) if Time.now > job_completion_time + timeout
             elsif Time.now > monitoring_start_time + timeout # Job never started and timed out
-              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: job_status, job_started: job_started)
+              _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_name, job_status: job_status, job_started: job_started)
             end
             sleep(timer_interval)
             next
@@ -380,18 +380,18 @@ module SqlCmd
       result
     end
 
-    def _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, backup_basename, job_status: nil, job_started: false)
+    def _raise_backup_failure(connection_string, database_name, last_backup_date_key, backup_start_time, job_name, job_status: nil, job_started: false)
       server_name = SqlCmd.connection_string_part(connection_string, :server)
-      if job_started
-        failure_message = "Backup may have failed as the backup has stopped and the last backup time shows #{SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key]} " \
-                          "but the backup should be newer than #{backup_start_time}! "
-        failure_message += job_status == 'NoJob' ? 'The job exited with success and so does not exist!' : "Check sql job 'Backup: #{backup_basename}' history on [#{server_name}] for details. \n"
-        raise failure_message + "Last backup time retrieved from: #{server_name}\\#{database_name}"
-      end
-      failure_message = "Backup appears to have failed! The last backup time shows #{SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key]} " \
-                        "but the backup should be newer than #{backup_start_time}! "
-      failure_message += job_status == 'NoJob' ? 'The backup job could not be found!' : "The job did not start in time. Check sql job 'Backup: #{backup_basename}' history on [#{server_name}] for details."
-      raise failure_message + "Last backup time retrieved from: #{server_name}\\#{database_name}"
+      failure_message = if job_started
+                          "Backup may have failed as the backup has stopped and the last backup time shows #{SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key]} " \
+                            "but the backup should be newer than #{backup_start_time}! " +
+                          (job_status == 'NoJob' ? 'The job exited with success and so does not exist!' : "Check sql job '#{job_name}' history on [#{server_name}] for details. \n")
+                        else
+                          "Backup appears to have failed! The last backup time shows #{SqlCmd::Database.info(connection_string, database_name)[last_backup_date_key]} " \
+                            "but the backup should be newer than #{backup_start_time}! " +
+                          (job_status == 'NoJob' ? 'The backup job could not be found!' : "The job did not start in time. Check sql job '#{job_name}' history on [#{server_name}] for details.")
+                        end
+      raise failure_message + " Last backup time retrieved from: #{server_name}\\#{database_name}"
     end
 
     # Creates and starts a SQL job to restore a database.
@@ -511,7 +511,7 @@ module SqlCmd
     def duplicate(start_time, source_connection_string, source_database_name, destination_connection_string, destination_database_name, backup_folder: nil, backup_url: nil, backup_basename: nil, force_restore: false, full_backup_method: nil, options: {})
       start_time = SqlCmd.unify_start_time(start_time)
       backup(start_time, source_connection_string, source_database_name, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename, options: options) unless info(source_connection_string, source_database_name)['DatabaseNotFound']
-      backup_folder, backup_basename = SqlCmd.backup_location_and_basename(start_time, source_connection_string, source_database_name, options, backup_url: backup_url) # TODO: rework for URL
+      backup_folder, backup_basename = SqlCmd.backup_location_and_basename(start_time, source_connection_string, source_database_name, options, backup_folder: backup_folder, backup_url: backup_url, backup_basename: backup_basename) # TODO: rework for URL
       if (backup_folder.nil? && backup_url.nil?) || backup_basename.nil?
         source_server = SqlCmd.connection_string_part(source_connection_string, :server)
         destination_server = SqlCmd.connection_string_part(destination_connection_string, :server)
