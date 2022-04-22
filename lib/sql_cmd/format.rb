@@ -85,7 +85,7 @@ module SqlCmd
   end
 
   # get the basename of the backup based on a full file_path such as the SQL value from [backupmediafamily].[physical_device_name]
-  def backup_basename(backup_path)
+  def backup_basename_from_path(backup_path)
     return nil if backup_path.nil? || backup_path.empty?
     ::File.basename(backup_path).gsub(/(\.part\d+)?\.(bak|trn)/i, '')
   end

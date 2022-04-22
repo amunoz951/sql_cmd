@@ -500,8 +500,8 @@ module SqlCmd
       database_info = info(connection_string, database_name) if database_info.nil?
       server_name = SqlCmd.connection_string_part(connection_string, :server)
       EasyIO.logger.info "Ensuring full backup has taken place for [#{server_name}].[#{database_name}]..."
-      if force_backup || database_info['LastNonCopyOnlyFullBackupDate'].nil? || # Ensure last full backup occurred AFTER the DB was last restored
-         (!database_info['LastRestoreDate'].nil? && database_info['LastNonCopyOnlyFullBackupDate'] < database_info['LastRestoreDate'])
+      start_time = database_info['LastRestoreDate'] || database_info['create_date']
+      if force_backup || database_info['LastNonCopyOnlyFullBackupDate'].nil? || (database_info['LastNonCopyOnlyFullBackupDate'] < start_time) # Ensure last full backup occurred AFTER the DB was last restored/created
         EasyIO.logger.info 'Running full backup...'
         backup_basename = "full_backup-#{database_name}_#{EasyTime.yyyymmdd}" # If a full_backup_method was not provided, use this name for the database backup for clarity
         full_backup_method.nil? ? SqlCmd::Database.backup(Time.now, connection_string, database_name, backup_basename: backup_basename, options: { 'copyonly' => false }) : full_backup_method.call
