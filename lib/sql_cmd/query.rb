@@ -245,6 +245,7 @@ module SqlCmd
   def migrate_logins(start_time, source_connection_string, destination_connection_string, database_name)
     start_time = SqlCmd.unify_start_time(start_time)
     import_script_filename = export_logins(start_time, source_connection_string, database_name)
+    return if import_script_filename.nil?
     if ::File.exist?(import_script_filename)
       EasyIO.logger.info "Importing logins on [#{connection_string_part(destination_connection_string, :server)}]..."
       execute_script_file(destination_connection_string, import_script_filename)

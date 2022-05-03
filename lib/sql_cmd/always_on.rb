@@ -62,8 +62,10 @@ module SqlCmd
       EasyIO.logger.header 'AlwaysOn Permissions Migration to Replica'
       EasyIO.logger.debug 'Migrating logins to replica...'
       import_script_filename = SqlCmd.export_logins(start_time, primary_connection_string, database_name)
-      EasyIO.logger.info "Importing logins on [#{SqlCmd.connection_string_part(replica_connection_string, :server)}]..."
-      SqlCmd.execute_script_file(replica_connection_string, import_script_filename)
+      unless import_script_filename.nil?
+        EasyIO.logger.info "Importing logins on [#{SqlCmd.connection_string_part(replica_connection_string, :server)}]..."
+        SqlCmd.execute_script_file(replica_connection_string, import_script_filename)
+      end
       EasyIO.logger.debug 'Running database_status script...'
       database_info = SqlCmd::Database.info(connection_string, database_name)
       replica_database_info = SqlCmd::Database.info(replica_connection_string, database_name)
