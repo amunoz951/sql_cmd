@@ -477,7 +477,7 @@ module SqlCmd
       end
       failure_message = 'Restore appears to have failed! '
       failure_message += job_status == 'NoJob' ? 'The job could not be found and the restored database is not up to date!' : "The job did not start in time. Check sql job 'Restore: #{database_name}' history on [#{server_name}] for details."
-      raise failure_message + "Restore destination: #{server_name}\\#{database_name}"
+      raise failure_message + "\nRestore destination: #{server_name}\\#{database_name}"
     end
 
     def check_restore_date(start_time, connection_string, database_name, messages = :none, log_only: false)
@@ -535,7 +535,11 @@ module SqlCmd
     end
 
     def apply_recovery_model(connection_string, database_name, options)
-      return if recovery_model_set?(connection_string, database_name, options)
+      if recovery_model_set?(connection_string, database_name, options)
+        EasyIO.logger.info "Recovery model already set to '#{options['recovery_model']}'. No change needed."
+        return
+      end
+      EasyIO.logger.info "Setting recovery model to '#{options['recovery_model']}'..."
       options['recovery_model'] ||= 'FULL'
       options['rollback'] ||= 'ROLLBACK IMMEDIATE' # other options: ROLLBACK AFTER 30, NO_WAIT
       sql_script = "ALTER DATABASE [#{database_name}] SET RECOVERY #{options['recovery_model']} WITH #{options['rollback']}"
@@ -547,6 +551,7 @@ module SqlCmd
           #{'=' * 120}\n"
       EOS
       raise failure_message unless recovery_model_set?(connection_string, database_name, options)
+      EasyIO.logger.info "Recovery model updated to '#{options['recovery_model']}'."
     end
 
     def recovery_model_set?(connection_string, database_name, options)
