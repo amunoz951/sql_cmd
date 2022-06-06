@@ -268,7 +268,7 @@ module SqlCmd
 
     def enabled?(connection_string)
       server_info = SqlCmd.get_sql_server_settings(connection_string)
-      server_info['AvailabilityGroup'].nil? || server_info['SecondaryReplica'].nil?
+      !server_info['AvailabilityGroup'].nil? && !server_info['SecondaryReplica'].nil?
     end
   end
 end
