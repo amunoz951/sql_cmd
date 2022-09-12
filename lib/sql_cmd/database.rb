@@ -214,6 +214,8 @@ module SqlCmd
           raise "Insufficient free space on #{sql_server} to restore database! Must have greater than #{free_space_threshold}% space remaining after restore." if insufficient_space
         end
 
+        database_backup_types = %w(1 5)
+        drop(connection_string, database_name) if options['drop_before_restoring'] && !database_info['DatabaseNotFound'] && database_backup_types.include?(sql_backup_header['BackupType'])
         run_restore_as_job(connection_string, sql_server_settings, backup_files, database_name, options: options)
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files, options) unless asynchronous
       end
