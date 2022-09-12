@@ -137,7 +137,7 @@ module SqlCmd
       connection_string = SqlCmd.remove_connection_string_part(connection_string, :database)
       sql_server = SqlCmd.connection_string_part(connection_string, :server)
       database_info = info(connection_string, database_name)
-      import_script_path = nil
+      import_script_path = import_security_script_path(start_time, connection_string, database_name, backup_url)
       unless database_info['DatabaseNotFound']
         raise "Failed to restore database: [#{database_name}] on [#{sql_server}]! Database already exists!" unless overwrite || force_restore
         unless options['logonly'] || database_info['state_desc'] != 'ONLINE' || permissions == :no_permissions
@@ -560,12 +560,19 @@ module SqlCmd
       SqlCmd.execute_query(connection_string, sql_script, return_type: :scalar, readonly: true) || false
     end
 
-    def export_security(start_time, connection_string, database_name, storage_url = nil, options = {})
+    def import_security_script_path(start_time, connection_string, database_name, storage_url = nil)
       start_time = SqlCmd.unify_start_time(start_time)
       server_name = SqlCmd.connection_string_part(connection_string, :server)
       export_folder = "#{SqlCmd.config['paths']['cache']}/sql_cmd/logins"
       basename_prefix = storage_url.nil? ? "#{EasyFormat::File.windows_friendly_name(server_name)}_" : ''
       import_script_path = "#{export_folder}/#{basename_prefix}#{database_name}_database_permissions_#{EasyTime.yyyymmdd(start_time)}.sql"
+    end
+
+    def export_security(start_time, connection_string, database_name, storage_url = nil, options = {})
+      start_time = SqlCmd.unify_start_time(start_time)
+      server_name = SqlCmd.connection_string_part(connection_string, :server)
+      export_folder = "#{SqlCmd.config['paths']['cache']}/sql_cmd/logins"
+      import_script_path = import_security_script_path(start_time, connection_string, database_name, storage_url)
       if ::File.exist?(import_script_path) && ::File.mtime(import_script_path) > start_time
         content = ::File.read(import_script_path)
         SqlCmd::Azure::AttachedStorage.upload(::File.basename(import_script_path), content, options['storage_account_name'], options['storage_access_key'], storage_url: storage_url) unless storage_url.nil?

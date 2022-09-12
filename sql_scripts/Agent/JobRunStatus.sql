@@ -6,7 +6,7 @@ SELECT
     j.name AS job_name,
     ja.start_execution_date,
     ISNULL(last_executed_step_id,0)+1 AS current_executed_step_id,
-    Js.step_name
+    js.step_name
 FROM msdb.dbo.sysjobactivity ja
 LEFT JOIN msdb.dbo.sysjobhistory jh
     ON ja.job_history_id = jh.instance_id
