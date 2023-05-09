@@ -219,7 +219,7 @@ module SqlCmd
         run_restore_as_job(connection_string, sql_server_settings, backup_files, database_name, options: options)
         monitor_restore(minimum_restore_date, connection_string, database_name, backup_files, options) unless asynchronous
       end
-      import_security(connection_string, database_name, import_script_path, backup_url, options) unless import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
+      import_security(connection_string, database_name, import_script_path, backup_url, options) unless database_info['DatabaseNotFound'] || import_script_path.nil? || [:no_permissions, :export_only].include?(permissions)
       SqlCmd.update_sql_compatibility(connection_string, database_name, options['compatibility_level']) if options['compatibility_level']
       apply_recovery_model(connection_string, database_name, options) if options['recovery_model']
       SqlCmd::AlwaysOn.add_to_availability_group(connection_string, database_name, full_backup_method: full_backup_method) if sql_server_settings['AlwaysOnEnabled'] && !options['secondaryreplica'] && !options['skip_always_on']
